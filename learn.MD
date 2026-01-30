@@ -1,12 +1,11 @@
-Documentation cleanup + learning extraction — single run
-
 Goal
 In a single run:
 • Extract lessons from task communication.
 • Place knowledge at the correct scope (human, feature, LLM instruction, LLM example, or temporary).
 • Clean and consolidate documentation into canonical topics.
 • Enforce documentation rules retroactively across the entire corpus.
-• Update the LLM instruction rules with high-quality, enforceable rules only.
+• Update LLM instruction rules with high-quality, enforceable rules only.
+• Ensure internal consistency, shared vocabulary, and zero duplication inside documents.
 
 ⸻
 
@@ -57,7 +56,7 @@ If any condition fails, the content must not be in BEST_PRACTICES.
 • Each file must clearly start with:
 “LLM examples — not human documentation”.
 • LLM-only examples must not be copied into BEST_PRACTICES.
-• LLM-only examples must not be embedded in the LLM instruction rules.
+• LLM-only examples must not be embedded in LLM instruction rules.
 8.	LLM-only lessons (rules)
 • Lessons whose purpose is to prevent incorrect LLM assumptions must be encoded as enforceable LLM instruction rules.
 • LLM reasoning guidance must never appear in BEST_PRACTICES.
@@ -66,14 +65,14 @@ If any condition fails, the content must not be in BEST_PRACTICES.
 
 C. LLM rule qualification gate (mandatory)
 
-Before adding anything to the LLM instruction rules, apply all checks below.
+Before adding anything to LLM instruction rules, apply all checks below.
 If any check fails, rewrite the item or discard it.
 9.	Rule vs fact test
 • Rules must prescribe or constrain behavior.
 • Descriptive statements about frameworks, libraries, or system behavior are not rules.
 10.	Generalization test
 • Rules must apply to multiple situations.
-• Statements tied to a single line of code, header, Redis command, or investigation outcome must be generalized or dropped.
+• Statements tied to a single line of code, header, Redis command, environment detail, or investigation outcome must be generalized or dropped.
 11.	Preventive value test
 • Rules must clearly prevent a future mistake or mis-assumption.
 • If removal would not increase risk, drop the rule.
@@ -108,12 +107,35 @@ Remove duplication, normalize structure, and consolidate topics.
 • exactly one canonical document per topic
 • subtopics must be sections, not separate files
 • overview documents may link to canonical docs instead of duplicating content
-17.	Temporary document promotion
+17.	Intra-document consolidation (mandatory)
+• Within a single document:
+• each core concept must be defined exactly once
+• later sections must reference the original definition instead of re-explaining it
+• If the same concept appears multiple times:
+• keep the clearest definition
+• remove or shorten all others to references
+18.	Core concepts and terminology (mandatory)
+• Every non-trivial document must start with a section named:
+• “Core Concepts”, or
+• “Key Concepts”, or
+• “Terminology”
+• This section must:
+• define the key concepts and entities used throughout the document
+• establish canonical naming and wording
+• Later sections must:
+• use these terms consistently
+• not redefine or rename existing concepts
+19.	Reference instead of repetition
+• When a section depends on a concept defined earlier:
+• reference the earlier section
+• do not restate the full explanation
+• Repetition is allowed only when meaning is extended or the abstraction level changes (must be explicit).
+20.	Temporary document promotion
 • promote only if content is long-lived and broadly useful
 • merge into existing canonical docs when possible
 • create new canonical docs when required for compliance
 • eliminate duplication after promotion
-18.	Scope enforcement
+21.	Scope enforcement
 • exclude test artifacts and test result summaries
 • keep test documentation only if general and long-lived
 • .github/docs/ must never reference .github/tmp/
@@ -121,13 +143,13 @@ Remove duplication, normalize structure, and consolidate topics.
 ⸻
 
 F. LLM instruction rules structure
-19.	From communication lessons and documentation decisions, extract only enforceable rules.
-20.	Update the LLM instruction rules using this exact structure:
+22.	From communication lessons and documentation decisions, extract only enforceable rules.
+23.	Update LLM instruction rules using this exact structure:
 
 Section 1: Reusable engineering rules (Java/Kotlin ecosystem)
 • applies to any Java/Kotlin project
 • correctness, testing hygiene, verification discipline, refactoring safety
-• must not reference repository-specific paths or environment details
+• must not reference repository-specific paths, environment details, or user machines
 
 Section 2: Repository style and conventions (look-alike guidelines)
 • rules for consistency in this repository only
@@ -153,23 +175,23 @@ Rule placement test:
 ⸻
 
 G. Environment and privacy gate (mandatory)
-21.	Do not add developer-specific or machine-specific details to any .github/** file.
+24.	Do not add developer-specific or machine-specific details to any .github/** file.
 • forbid absolute local paths (/Users/..., /home/..., C:\...)
 • forbid usernames, machine names, IDE workspace paths
 • all file references must be repository-relative
-22.	If a rule depends on local setup or assistant runtime limits:
+25.	If a rule depends on local setup or assistant runtime limits:
 • rewrite it into a repo-agnostic constraint, or
 • discard it
 
 ⸻
 
 H. Retroactive compliance pass (mandatory)
-23.	Apply all documentation rules to the entire corpus, not only new changes.
+26.	Apply all documentation rules to the entire corpus, not only new changes.
 • fix pre-existing violations with minimal, safe edits
-24.	Enforce no .github/tmp references globally
+27.	Enforce no .github/tmp references globally
 • scan all .github/docs/**
 • rewrite references using neutral wording (e.g. “temporary documentation folder”)
-25.	Enforce BEST_PRACTICES scope retroactively
+28.	Enforce BEST_PRACTICES scope retroactively
 • identify internal-heavy sections
 • move content to canonical feature docs or remove it
 • replace with short, non-duplicating pointers if needed
@@ -177,9 +199,12 @@ H. Retroactive compliance pass (mandatory)
 ⸻
 
 I. Final validation
-26.	Verify:
+29.	Verify:
 • no new markdown files exist outside .github/docs/, .github/docs/examples/, and .github/tmp/
 • .github/docs/ contains no .github/tmp references
 • no developer-specific paths or environment details exist
+• no duplicated explanations of the same concept inside a document
+• each non-trivial document has a “Core Concepts / Key Concepts / Terminology” section
+• terminology is consistent throughout each document
 • no duplication between BEST_PRACTICES and feature docs
 • every topic has exactly one canonical home
