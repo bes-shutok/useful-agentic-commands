@@ -4,7 +4,8 @@ description: >
   Orchestrates iterative implementation of a plans-skill implementation plan using sub-agents:
   implement one task at a time (tests must pass), mark plan checkboxes, commit via done; then run
   review/fix loops until one fresh review of the current digest has zero unresolved blocking
-  findings after receiving-review triage, with at most five full-panel rounds,
+  findings after receiving-review triage, with at most five full-panel rounds and a total-round
+  budget (default 5),
   with done after each review iteration;
   on successful completion, remove session tmp under resolved tmp_dir/execute-plan/<plan-slug>/.
   Trigger phrases and invocations:
@@ -289,11 +290,15 @@ Create `{tmp_dir}/execute-plan/<PLAN_SLUG>/manifest.md` if missing:
 # Execute-plan session: <PLAN_SLUG>
 
 workflow_state: active
+updated: <ISO8601 timestamp>
+session_start_commit: <sha>
 
 | Step | Log path | Status |
 |------|----------|--------|
 | Phase 0 branch | (none) | pending |
 ```
+
+`session_start_commit` is the HEAD sha captured when Phase 0 completes; the Step 0.5 resume exemption uses it as its `git log` lower bound. The orchestrator refreshes the `updated:` timestamp on EVERY manifest update (including the Step 1.4 and Step 3.4 done-verification gate updates and the Step 3.5 counter refresh); it is the freshness witness the `done` Step 1.5 staleness rule reads. On resume of an existing run, the orchestrator's first action is a manifest update refreshing `updated:` (and confirming `workflow_state: active`) before relaunching any sub-agent; this re-establishes the fresh witness up front instead of via per-task review rounds.
 
 Update the manifest when Phase 0 completes. See [agent-logs.md](agent-logs.md) for log paths.
 
@@ -312,6 +317,25 @@ Check:
 3. Re-run the grep until clean, then run the plan's `## Validation Commands` once to confirm targets resolve.
 
 This is a pre-Phase-1 plan-maintenance pass (its own commit, not one of the plan's tasks) so per-task commits stay clean. Skip on repos without the migration-complete signal, or when the grep returns clean (plan post-dates the migration). See `development_lessons.md` in the affected repo for the concrete incident this checkpoint codifies.
+
+### Step 0.5: Plan readiness gate (hard gate, before any task implementation)
+
+Before entering Phase 1, run the plan readiness validator with the project git root as cwd, resolving the script via env-var override with two fallbacks (repo-local copy if present, then the deployed runtime copy; this skill may run in any consumer repo, not only the repo that ships the script):
+
+```bash
+GATE_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PLAN_READINESS_VALIDATOR="${PLAN_READINESS_VALIDATOR:-}"
+if [ -z "$PLAN_READINESS_VALIDATOR" ] && [ -f "$GATE_TOP/scripts/plan_readiness.py" ]; then
+  PLAN_READINESS_VALIDATOR="$GATE_TOP/scripts/plan_readiness.py"
+  echo "readiness gate: using repo-local validator $PLAN_READINESS_VALIDATOR" >&2
+fi
+PLAN_READINESS_VALIDATOR="${PLAN_READINESS_VALIDATOR:-$HOME/.ai-playbook/scripts/plan_readiness.py}"
+python3 "$PLAN_READINESS_VALIDATOR" <plan-path>
+```
+
+Exit 0 means the latest `review-plan` round covers the current plan bytes (sidecar digest match, `ready=yes`, zero unresolved blocking findings). A **non-zero exit is a hard gate**: stop before launching any implement sub-agent, report the first failed readiness condition to the user, and do not re-attempt execution until a fresh `review-plan` round has reviewed the new digest. Any plan edit (digest change) after a clean review invalidates that review; require a fresh `review-plan` round before re-execution. **Resume exemption:** when resuming an interrupted run of this skill, a stale-digest failure is exempt ONLY if every changed hunk line in `git log -p -- <plan-path>` since this run's start belongs to a `-`/`+` pair whose lines are byte-identical except a single `- [ ]` → `- [x]` change (any pure addition or pure deletion among the changed lines voids the exemption); quote that evidence when continuing. "Since this run's start" means the `session_start_commit` recorded in the execute-plan session manifest (`{tmp_dir}/execute-plan/<PLAN_SLUG>/manifest.md`, captured in Phase 0 per Step 0.4); use that named commit as the `git log` lower bound, not an approximate timestamp. Any other delta requires a fresh `review-plan` round. **Deployment-gap signature (narrow, r5 Y8):** a deployment gap is ONLY (a) the validator file itself missing or unopenable, or (b) a `ModuleNotFoundError` in the output. For either: stop and report the wiring gap, and never use the resume exemption for it; manual remedy: `cp scripts/plan_readiness.py ~/.ai-playbook/scripts/` plus siblings (the script imports `validate_review_staging.py` and `facts_paths.py` from its own directory, so copy all three; the deployed `facts_paths.py` may be a symlink, keep it one, e.g. `cp -P`, do not dereference it into a second copy). Any OTHER non-zero exit that prints no `readiness FAILED:` line (validator crash, traceback, unexpected output) is NOT covered by that copy remedy: investigate the validator before re-running the gate.
+
+A clean plan review establishes implementation readiness only; it does not authorize deployment, merge, or any other external effect. Deployment, merge, push, and other external actions remain governed by their own authorization rules (see user `AGENTS.md` Git Push Policy).
 
 ## Configuration (from facts document)
 
@@ -407,7 +431,9 @@ Before Step 1.4 on **company-scoped** repos with the [migration-complete signal]
 - If the completed task touches contracts, domain behavior, integrations, or ops (per task description or `Files:` list), run or confirm [`doc-hierarchy-upkeep`](../doc-hierarchy-upkeep/SKILL.md) in the same change set.
 - If Layer 2 docs were not updated and the task scope required it, do not launch `done` until upkeep edits are included or the user explicitly defers doc sync.
 
-Skip this checkpoint on personal projects or when migration-complete is false (suggest `doc-hierarchy-migrate` repair instead of upkeep).
+Skip the upkeep run on personal projects or when migration-complete is false (suggest `doc-hierarchy-migrate` repair instead of upkeep).
+
+- If the correct SOT owner, document role, or placement for required documentation is genuinely unclear (not settled by the plan or doc-hierarchy roles), pause and run `grill-with-docs` with the user (one question at a time) before editing; never resolve the ambiguity by duplicating or contradicting existing documentation. This pause applies on every repo; it is not gated by the checkpoint's company-scope/migration-complete precondition, which gates only the upkeep run.
 
 ### Step 1.4: Launch done sub-agent
 
@@ -470,6 +496,7 @@ Run after all tasks are implemented and final validation passes.
 | **Blocking** | Zero unresolved findings with `blocking: true` after triage |
 | **Freshness** | The clean result reviews the current source digest after the latest fix |
 | **Full-panel budget** | At most five full-panel rounds; ask before a sixth |
+| **Total-round budget** | At most `max_review_rounds` review rounds in the whole Phase 3 loop (default 5), counting full-panel and focused rounds alike; ask at the cap |
 | **Escalation budget** | At most one escalation worker in the active review run |
 
 Track in `manifest.md`:
@@ -477,6 +504,8 @@ Track in `manifest.md`:
 - `review_round`; current review pass
 - `full_panel_rounds`; increment only when all five base workers launch
 - `escalation_count`; never greater than one in the active run
+- `re_entry_count`; same-round worker re-entries, reset each round
+- `standing_continue`; the standing-instruction line when one is granted, closed as ended at exit
 - `source_digest`; digest reviewed in the current pass
 
 **Provisional vs accepted findings:** dropped false positives do not block. Any accepted fix mutates the source and requires a fresh targeted review of the new digest. Severity alone does not determine readiness.
@@ -496,7 +525,7 @@ After Step 3.3 address-review mutates code, the **next** Step 3.1 is a **fresh a
 
 ### Step 3.1: Parent-orchestrated code review (default)
 
-**Before launching:** read the review counters from `manifest.md`. If a sixth full-panel round or second escalation would be required, stop at Step 3.5 for user direction.
+**Before launching:** read the review counters from `manifest.md`. If a sixth full-panel round or second escalation would be required, stop at Step 3.5 for user direction; if a next round whose number would exceed `max_review_rounds` would be required and no standing instruction covers this loop, stop at Step 3.5 for user direction.
 
 **Default (required when the parent can fan out workers):** the execute-plan **parent** is the `doing-code-review` orchestrator. Do **not** wrap Phase 3 in a nested "Code Review" sub-agent that re-reads `doing-code-review` and launches its own panel (double nesting). That hop loses session context, hides progress, and has hung without producing a staging doc.
 
@@ -516,6 +545,8 @@ After Step 3.3 address-review mutates code, the **next** Step 3.1 is a **fresh a
 **Mutator failure-mode matrix (required in staging doc):** list every new or changed public mutating API on explicit must-fix paths. Missing rows make the round not clean even when no blocking finding remains. For doc/skill-only plans: `N/A: no mutating APIs in this plan`.
 
 Review output: `{reviews_dir}/YYYY-MM-DD-<plan-slug>-code-review-r<N>.md` (increment `N` each round; use `-code-review-r` prefix to distinguish from pre-execution **plan** reviews at `…-plan-review-r<N>.md`).
+
+**No forward references to unwritten staging paths:** do not cite a staging-doc path in the manifest, `<REVIEW_LOG_PATH>`, `done` prompts, or user reports before the file exists at that exact path; write the doc first, then reference it. When re-synthesis or re-entry changes a staging path (new `-r<N>` number, renamed slug), grep the session logs and manifest for the old path and update every reference in the same turn. Stale pre-writes drift into phantom references that later steps and reviewers chase.
 
 **Default:** the parent writes `<REVIEW_LOG_PATH>` (heartbeat + synthesis); do **not** pass it to lens workers. **Recovery:** pass `<REVIEW_LOG_PATH>` into the Code Review (recovery) template so that nested orchestrator owns heartbeat and final pass. Pass `review_round` / `<REVIEW_ROUND>` = current `review_round` from manifest. See [agent-logs.md](agent-logs.md).
 
@@ -547,6 +578,10 @@ Parse the staging doc at the verified path. Count unresolved findings with `bloc
 
 Compare rounds: if a finding is identical to a prior round and was already fixed, downgrade to duplicate and drop; do not loop forever on stale comments.
 
+Class membership in the two backlog-by-default classes defined by `receiving-review` (sibling-doc restatement, duplicate unit witness) is decided by the receiving-review pass (sub-agent or inline) during Step 3.3 triage, never by the orchestrator here; a blocking candidate still takes the Fix-risk blocking re-evaluation and is never silently backlogged.
+
+When Step 3.2 shows no unresolved blocking findings and Step 3.3 is skipped, the orchestrator still routes non-blocking residuals through a receiving-review pass (which may run inline) applying the owner rules per `receiving-review`; the pass fixes findings it does not defer (mutating the digest and restarting the fresh-review rule), and deferred findings (the two classes, user-deferred, scope-dropped) become durable backlog items per `receiving-review` **Backlog capture** (for the two classes, pointer-cleanup and family-completeness items) before the clean row may exit. Deferrals of the two classes are classify-and-record only, with evidence per `receiving-review`.
+
 ### Step 3.3: Launch address-review sub-agent
 
 If unresolved blocking findings exist from Step 3.2:
@@ -560,28 +595,32 @@ The sub-agent runs `receiving-review` against the staging doc (not GitHub thread
 
 Pass `<ADDRESS_LOG_PATH>` per [agent-logs.md](agent-logs.md). Orchestrator verifies the log exists before Step 3.4.
 
-If Step 3.2 shows no unresolved blocking findings, skip Step 3.3 and go to Step 3.4.
+If Step 3.2 shows no unresolved blocking findings, skip Step 3.3's launch but still run its verification gate and go to Step 3.4.
 
 **Step 3.3 verification gate (orchestrator, before Step 3.4):**
 
 1. Address sub-agent returned `<ADDRESS_LOG_PATH>` and the file is non-empty.
 2. Staging doc statuses updated (`done`, `drop`, or justified `pending`).
 3. Address log remaining-blocking section parsed, or staging re-read for unresolved `blocking: true`.
-4. Every valid finding not fixed in this iteration has a durable backlog item (path recorded on the finding or in the address log); a finding held `pending` for the fix-risk user decision (Hard Gate 23) is recorded as returned-for-ask, not backlogged.
+4. Every valid finding not fixed in this iteration has a durable backlog item (path recorded on the finding, in the address log when Step 3.3 launched, or in the skip-path disposition note); a finding held `pending` for the fix-risk user decision (Hard Gate 23) is recorded as returned-for-ask, not backlogged.
+5. On the Step 3.3-skip path, when Step 3.2 left non-blocking residuals, the skip-path receiving-review pass ran and every valid unfixed finding carries a durable backlog item, recorded in a short disposition note appended to `manifest.md` (finding, fixed or deferred, backlog item path); with no residuals, no pass is required and this item passes; items 1-3 apply only when Step 3.3 launched, and on the skip path this item governs.
 
 ### Step 3.4: Evaluate the current digest and launch done
 
 **Clear round (code-mutation gate):** A round is only "clear" if no code changes were made to fix issues. Findings marked `drop` (false positives) do not mutate code, but findings marked `done` (fixed) do mutate code and require a fresh review.
 
-| Step 3.3 ran? | Result |
+Backlog items, manifest updates, and disposition notes are bookkeeping, not digest mutations; only changes to reviewed source scope count.
+
+| An address pass ran (Step 3.3 launch or the Step 3.2 skip-path receiving-review pass)? | Result |
 |---------------|--------|
-| No | Clean when zero unresolved blocking findings and the quality bar passes |
-| Yes with accepted fixes | Not clean; the changed digest requires a fresh targeted review |
-| Yes with drops only | Clean when zero unresolved blocking findings and the quality bar passes |
+| No (no address pass ran, or the pass neither accepted fixes nor mutated the digest) | Clean when zero unresolved blocking findings and the quality bar passes |
+| Yes, via the skip-path pass with accepted fixes | Not clean; the changed digest requires a fresh targeted review (a same-pass pointer conversion counts as accepted fixes) |
+| Yes, via the Step 3.3 address pass with accepted fixes | Not clean; the changed digest requires a fresh targeted review |
+| Yes with drops and/or two-class deferrals only (no accepted fixes, no digest mutation) | Clean when zero unresolved blocking findings and the quality bar passes |
 
 **Clear-round quality bar:**
 
-1. **Mutator failure-mode matrix** present and complete (Step 3.1 gate #5); every mutator row has IT evidence, a staged finding, or `checked: yes` with a concrete pointer.
+1. **Mutator failure-mode matrix** present and complete (Step 3.1 gate #4); every mutator row has IT evidence, a staged finding, or `checked: yes` with a concrete pointer.
 2. **Not a discard-only quiet round without adversarial depth:** If raw findings were non-zero and **all** were discarded as `noise` / `already-mitigated` / `prior-review`, the review log or staging Analysis must still show the failure-mode matrix was filled from code/IT evidence (not left empty). An empty matrix plus "no findings" after a fix round is **unclear**; relaunch Step 3.1 with fresh-review framing.
 3. Required conditional risk lenses were loaded.
 
@@ -589,7 +628,7 @@ Record the current source digest and panel counters in `manifest.md`.
 
 **Loop exit condition:** one fresh clean review of the current digest. Do not run a second clean full panel on the same digest.
 
-**Hard cap:** do not launch a sixth full-panel round or a second escalation within the active run without stopping for user direction.
+**Hard cap:** do not launch a sixth full-panel round or a second escalation within the active run without stopping for user direction. The total-round cap of the Review end condition table applies alongside.
 
 Launch a sub-agent using your agent's sub-agent execution capability.
 Use the **Done (per review iteration)** template from [subagent-prompts.md](subagent-prompts.md).
@@ -615,15 +654,22 @@ The parent must then execute Step 3.5 in the same active run. Do not send a fina
 
 ### Step 3.5: Continue or exit loop
 
-Update `manifest.md` with `review_round`, `full_panel_rounds`, `escalation_count`, and `source_digest`.
+Update `manifest.md` with `review_round`, `full_panel_rounds`, `escalation_count`, `re_entry_count` (reset each round), the `standing_continue` state, and `source_digest`.
 
 | Condition | Action |
 |-----------|--------|
+| Current digest has a fresh clean review satisfying the clear-round quality bar, including exit coverage per `review-panel-selection` | Proceed to Phase 4; where a reconciliation trigger also holds, review-reconciliation runs first, and if it changes the digest or staged artifacts, the clean review is no longer fresh and the loop returns to Step 3.1 with the standing_continue line left open |
+| `review_round` has reached `max_review_rounds` and no standing instruction covers this loop | Stop; where a reconciliation trigger also holds, review-reconciliation runs first, then a short session note under `{tmp_dir}/` (rounds run, unresolved residuals by class, backlog items written, whether exit coverage per `review-panel-selection` has run) is written and the user ask happens (reconciliation changes which digest the next round reviews, not whether the user is asked); where fix-risk stop conditions also hold (their direction is taken whether or not a reconciliation trigger holds, but any such reconciliation still runs first), take the Fix-risk direction per Hard Gate 23 (a stop-and-ask) and fold the budget question (continue, backlog non-blocking residuals, standing continue, or stop) into that single ask rather than issuing both, still writing the short session note; otherwise write the same short session note and ask the user whether to continue, backlog non-blocking residuals, give a standing continue instruction, or stop; archiving with unresolved blocking findings additionally requires the user's explicit documented acceptance |
 | Recurring root, contradictory review artifacts, or configured non-monotonic-cycle cap is reached | Invoke `review-reconciliation`; after any change, return to Step 3.1 through the normal parent-orchestrated panel |
-| Current digest has a fresh clean review | Proceed to Phase 4 |
 | A sixth full panel or second escalation is required | Stop; report unresolved blocking findings and ask the user |
 | Fix-risk stop conditions met (must-stay-blocking finding with no additive path or user; Hard Gate 23) | Stop; ask the user for direction per `receiving-review` **Fix-risk triage when fixes regenerate findings** |
-| Otherwise | Increment `review_round` and return to Step 3.1 with the targeted worker set |
+| Otherwise | Return to Step 3.1 with the targeted worker set |
+
+Every launch of a Step 3.1 review panel increments `review_round`, except a verification-gate or timeout re-entry that re-checks or re-synthesizes the same round's staging doc without re-running workers. `review_round` starts at 0, so the initial review is round 1. A relaunch that starts a new review round (a next `-r<N>` staging doc) counts as a launch. A re-entry that re-runs workers within the same round counts as a launch too: it advances `review_round`, is tracked as `re_entry_count` in the manifest (the counter resets each round; the launch itself does not reset it), and continues the same round's `-r<N>` staging doc as an appended pass, so staging-doc numbering and `review_round` may diverge after a counted re-entry. An uncounted re-entry (re-checking or re-synthesizing without re-running workers) advances neither `review_round` nor the `-r<N>` staging doc but still increments `re_entry_count`. When `re_entry_count` reaches 3 within the same round, stop the loop and ask the user before any further re-entry (a mid-round stop: no session note is required, and a standing continue instruction does not lift this stop). The `max_review_rounds` cap compares `review_round` only, which each counted launch advances; the re-entry stop above is a separate guard and is not a `max_review_rounds` cap stop.
+
+A standing instruction from the user for this loop (for example, continue until clean) lifts only the `max_review_rounds` cap stops until the loop exits. Record it in `manifest.md` as a `standing_continue` line with its scope, the granting run's session key, and a loop-instance id (branch plus loop start timestamp) when first applied. Phase 3 treats a standing_continue line whose session key or loop-instance id differs from the current run as absent; the Step 3.5 cap row then asks rather than honoring it (ambiguous means absent; a loop resumed in a new session therefore re-asks, which is the intended recovery).
+
+The full-panel and escalation budgets are unchanged and continue to apply alongside this cap; the Step 3.5 manifest update records the round just completed and never advances the counter. Any loop exit, including a user-directed stop from a stop row, closes any standing_continue line as `standing_continue: ended` with the exit reason.
 
 ## Phase 4: Archive Plan
 
@@ -644,7 +690,7 @@ If `git ls-files` still lists the active path, the archive is incomplete (destin
 
 Include the plan move in a commit immediately after the last Step 3.4 `done` (same `done` sub-agent scope if uncommitted, or a follow-up `done` if needed).
 
-**Promoted backlog item (when applicable):** when the completed plan promoted a `{backlog_dir}` item (the plan header references a backlog file per `plans` **Backlog origin**), `git mv` that item to `{backlog_completed_dir}/` in the same archive commit and mark it `Status: done` in the same edit, per `plans` **Plan Lifecycle**. Skip when the plan has no backlog origin.
+**Promoted backlog item (when applicable):** when the completed plan promoted a `{backlog_dir}` item (the plan header references a backlog file per `plans` **Backlog origin**), `git mv` that item to `{backlog_completed_dir}/` in the same archive commit and mark it `Status: done` in the same edit, per `plans` **Plan Lifecycle**. Before marking an origin `Status: done`, diff its findings against the landed task edits AND the plan Assumptions: the header list can be a superset when assumptions scope items out to another owner; leave a partially covered origin open with a note. Skip when the plan has no backlog origin.
 
 ### Step 4.1: Update parent rollout tracker (when applicable)
 
@@ -722,7 +768,7 @@ Report successful plan completion to the user, including the verified terminal-r
 5. **Done after every review iteration**; launch the `done` **sub-agent** (Step 3.4) before the next review round; address-review fixes must not accumulate uncommitted across iterations.
 6. **Review scope (two tiers)**; **Explicit must-fix** paths from the plan are always in scope. Unlisted paths use **plan-related extension**: keep findings only when causally tied to the plan; drop unrelated issues. Do not treat the explicit list as a ceiling that hides plan-caused defects elsewhere on the branch.
 7. **One fresh blocking-clean review of the current digest**; the quality bar still requires the mutator matrix and required risk lenses.
-8. **Maximum five full-panel rounds**; stop and ask before a sixth. Targeted rounds do not reset the counter.
+8. **Maximum five full-panel rounds**; stop and ask before a sixth; at most `max_review_rounds` total review rounds (default 5) alongside, stopping and asking per the Review end condition table and Step 3.5's cap row (including its standing-instruction carve-out). Targeted rounds do not reset the full-panel counter.
 9. **Fresh test output**; never cite stale run results; re-run commands before claiming pass.
 10. **Preceding-step logs before learn**; implement and address-review workers write their assigned logs; Phase 3 lens workers have no log path; the parent (default) or recovery orchestrator owns `<REVIEW_LOG_PATH>`; each `done` reads only its immediately prior step's log(s). Missing required log blocks commit.
 11. **Tmp cleanup on success only**; remove `{tmp_dir}/execute-plan/<PLAN_SLUG>/` in Phase 5 after the success checklist passes; never on failure, max-rounds stop, or user interrupt.
@@ -748,7 +794,7 @@ If the user stops mid-plan:
 - If work exists only as uncommitted changes, say so explicitly; that means Step 1.4 was never run for those tasks.
 - Do not mark incomplete work as `[x]`.
 - **Preserve** `{tmp_dir}/execute-plan/<PLAN_SLUG>/`; do not run Phase 5 cleanup.
-- Offer to resume from the topmost incomplete task (or run **Recovery** below if the user wants execute-plan compliance on already-implemented work).
+- Offer to resume from the topmost incomplete task (or run **Recovery** below if the user wants execute-plan compliance on already-implemented work). On resume of an existing run, the orchestrator's first action is a manifest update refreshing `updated:` (and confirming `workflow_state: active`) before relaunching any sub-agent.
 
 ## Recovery: retroactive execute-plan compliance
 
@@ -794,6 +840,9 @@ For branch hygiene without a plan, use `review-loop`. Both workflows exit after 
 
 ### Consumes `review-staging` skill
 Phase 3 staging docs (and plan-review artifacts when present) must follow `review-staging` hierarchy and `## Review Statistics`, including the mutator failure-mode matrix when applicable. Clear-round quality bar treats incomplete staging as not clear.
+
+### Consumes `grill-with-docs` skill (checkpoint pause)
+Step 1.3b (Layer 2 documentation checkpoint) invokes `grill-with-docs` when documentation SOT ownership or placement is genuinely unclear, and the checkpoint pauses for the interview instead of allowing duplicated or contradictory documentation edits.
 
 ### Consumes `doc-hierarchy-upkeep` skill (checkpoint before Step 1.4)
 On company-scoped repos with migration-complete signal, Step 1.3b requires Layer 2 doc sync when plan tasks touch contracts, domain behavior, integrations, or ops. Upkeep edits belong in the same change set as the task before `done` commits.

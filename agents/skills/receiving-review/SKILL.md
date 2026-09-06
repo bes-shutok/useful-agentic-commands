@@ -11,6 +11,8 @@ Use this skill for **passive review**: evaluating, triaging, implementing, and r
 
 Do not use this skill to produce a fresh review of a PR or diff. Use `doing-code-review` for active review. For GitHub PR operations such as fetching review threads, replying to threads, and resolving bot threads, use the shared primitives in `github-pr-workflow`.
 
+Review findings are evidence to assess, not authorization to broaden the change's scope; findings outside the accepted scope become backlog items (see Backlog capture below) unless the user explicitly expands scope.
+
 ## Overview
 
 Code review requires technical evaluation, not emotional performance.
@@ -155,6 +157,12 @@ FOR multi-item feedback:
 ## Default: address all findings regardless of severity
 
 Address every review finding by default, including Low and optional ones, whether the file is in the active change set or a cross-cutting/new subsystem path. Do not ask for confirmation before implementing Low findings; just verify, implement, test, and report. In a regenerating review-fix loop this default is bounded by **Fix-risk triage when fixes regenerate findings** below.
+
+During execute-plan Phase 3, two classes are backlog-by-default instead of fixed-inline; this bound supersedes **Class-exhaustive fixes for recurring classes** for these two classes only. A sibling-doc restatement means the rule's canonical home already states it correctly; a peer on a shipped doc surface converts to a pointer on the canonical home in the same pass, preferring a pointer over deletion when readers may search the old location, and only a non-shipped or legacy peer defers as one pointer-cleanup backlog item. A duplicate unit witness means another test demonstrably pins the invariant, named with evidence it fails when the invariant is violated; defer as one family-completeness backlog item, recording a reproduced failure of the pinning test against a violated-invariant mutation as verify-fix evidence before the backlog item is accepted; a pin that cannot be reproduced disqualifies the duplicate-witness class and the finding reverts to the fix-everything default. A same-pass pointer conversion mutates the digest and follows the normal fresh-targeted-review rule; the round ends when the following review is clean. A finding in these classes that is `blocking: true` follows the blocking re-evaluation procedure of **Fix-risk triage when fixes regenerate findings** (the severity-calibration Blocking decision procedure against the current digest), regardless of whether that section's operational trigger has fired, and is never silently backlogged. Everything else keeps the fix-everything default, including cheap Low findings.
+
+For a fan-out on one cross-cutting rule, keep the existing consolidation rule in **Documentation and Comment Findings** and apply it in Phase 3 order: fix the canonical home first, then convert peers to pointers in the same pass or backlog the remaining peers as pointer cleanup; do not rewrite the full rule into every peer. The staging side (one fan-out finding naming the canonical home) is owned by `review-agents/review-panel-selection.md`.
+
+Mark a `testing#always-passes` fix done only when the finding ships a family checklist (the sibling tests that must gain the same witness) or the enumerated family migrated to a shared helper; a single hardened test closes the finding only when the remaining family is explicitly deferred to backlog as one item. The staging side (the sibling checklist staged with the finding) is owned by `review-agents/testing.md`.
 
 ```
 DEFAULT: address every finding (Critical/High/Medium/Low, in-scope or cross-cutting).
@@ -327,6 +335,8 @@ Capture an item when a valid finding ends triage as:
 Partner-declined fixes and softened reverts stay on the soften watchlist; do not duplicate them as backlog items unless the partner asks for a durable record.
 
 Resolve destination 1 before consulting any later destination; a failed resolution never falls through. A missing `{backlog_dir}` key or missing directory is a bootstrap trigger: run a `bootstrap-ai-playbook` recovery pass to resolve or create the backlog home, and if it still does not resolve, stop and ask the user before recording anywhere else. In a non-interactive run, return that ask to the orchestrator per **Fix-risk triage when fixes regenerate findings**; do not resolve it by choosing a later destination.
+
+The mechanical second line of defense is `scripts/check_backlog_inbox_location.py`, run by the done flow, which rejects files matching backlog-inbox filename shapes outside the backlog home, over both the tracked tree and untracked files inside the named hot dirs (the 2026-08-30 incident file was untracked).
 
 Destination, in order:
 

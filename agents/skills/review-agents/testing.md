@@ -74,6 +74,8 @@ Watch for tests that do not actually verify code:
 - Conditional assertions that always pass
 - Commented out failing test cases
 
+A `testing#always-passes` finding on a shared production path must stage the family checklist (sibling tests needing the same witness) or the shared-helper migration plan with the finding; the closure rule in `receiving-review` owns the fix side.
+
 ## Test Independence
 
 1. No shared mutable state between tests

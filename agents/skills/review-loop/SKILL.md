@@ -44,6 +44,8 @@ If `git diff ${BASE_BRANCH}...HEAD | wc -c` exceeds `review_large_diff_bytes` (d
 
 **Re-resolve the file set every round (required):** at the start of Step 1 in *each* round, re-run `git diff --name-only ${BASE_BRANCH}...HEAD` (committed mode) or `git status --short` (working-tree mode) and confirm the file list matches what this round intends to review. Do not cache the file set from round 1. A loop mutates the tree between rounds (fixes applied, files added by `learn`/`done`, partner edits), so a round-1 snapshot goes stale and silently drops new/changed files from later rounds, which produces a false "clean" exit on a partial review. If the file count changed since the prior round, the new files are in scope for the fresh review even if they bundle a different concern than the original change; do not dismiss them as out-of-scope without recording why.
 
+**Verdict-shape drift check (every round, before launching the review):** run `python3 scripts/plan_readiness.py --sweep`, resolving the script via the env-override, repo-local, then deployed-runtime fallback documented in `agents/hooks/plan-readiness/README.md`. A non-zero exit means the sweep failed: verdict-parse anomalies in the corpus, a missing or misconfigured reviews_dir, or a sibling compatibility failure (see agents/hooks/plan-readiness/README.md); read the stderr reason and resolve it before launching this round's workers. The sweep's coverage line is informational: it tracks how much of the corpus still predates the sidecar verdict field.
+
 ## One iteration
 
 | Step | Skill | What happens |
@@ -134,11 +136,13 @@ Stop only when **all** of the following hold on a fresh review of committed `HEA
 | `max_full_panel_rounds` | **5** | Run `review-reconciliation` before any sixth panel; ask the user when reconciliation needs a decision or the cap still blocks progress |
 | `max_escalations` | **1 per active run** | Prohibit a second escalation in the same run |
 
+A review round is one review pass regardless of panel mode; full-panel and focused rounds both count; this skill keeps its full-panel-only budget. `execute-plan` Phase 3 owns the total-round budget and counting semantics.
+
 Never use commit subjects like `Close review loop` or `Review complete` until exit criteria are met.
 
 ## Orchestration rules
 
-1. **Continuous iterations:** after `done` succeeds, increment `review_round` and return to step 1 unless exit criteria or `max_rounds` hit.
+1. **Continuous iterations:** after `done` succeeds, increment `review_round` and return to step 1 unless exit criteria or `max_full_panel_rounds` hit.
 2. **Sub-agents:** launch `doing-code-review` with the panel from `review-panel-selection.md`; do not replace with inline grep.
 3. **Targeted revisions:** after fixes, launch blind `correctness-completeness` plus every distinct worker that owned a finding or whose domain the fixes affected. If all five are selected, count a full-panel round. When the soften watchlist has `open` items, also launch the worker that owns each open pattern (see `review-panel-selection.md` tiered ownership).
 4. **Fix-risk triage before more folding:** when consecutive rounds' fixes keep regenerating new findings, apply the `receiving-review` **Fix-risk triage when fixes regenerate findings** section before folding further, and verify scoped fixes with the focused targeted round composed per `review-panel-selection.md` (Review-loop follow-ups; orchestration rule 3 selects the set). A fix-risk stop for user direction ends iterations until the user answers, like the max-rounds stop.
@@ -147,6 +151,8 @@ Never use commit subjects like `Close review loop` or `Review complete` until ex
 7. **Commits:** only `done` commits; one iteration -> one commit when fixes ran.
 8. **Push:** requires explicit user instruction.
 9. **PR mode:** if user gave a PR URL, still write staging docs; optional post to PR via `doing-code-review` Direct mode.
+
+Review findings are evidence to assess, not authorization to broaden the loop's scope; findings outside the accepted scope become backlog items (per receiving-review Backlog capture) unless the user explicitly expands scope.
 
 ## Anti-patterns
 

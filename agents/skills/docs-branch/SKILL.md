@@ -246,9 +246,30 @@ if git show-ref --verify --quiet "refs/heads/${DOCS_BRANCH}"; then
 fi
 [ -n "${DOCS_STAGED_DELETES_FILE:-}" ] && [ -f "$DOCS_STAGED_DELETES_FILE" ] && rm -f "$DOCS_STAGED_DELETES_FILE"
 [ -n "${RESTORED_PATHS_FILE:-}" ] && [ -f "$RESTORED_PATHS_FILE" ] && rm -f "$RESTORED_PATHS_FILE"
-# DOCS_TMP_SWEEP_FILE is intentionally NOT removed here: it is consumed later
-# (worktree sweep drop and staged deletion); the docs_branch_cleanup trap
-# removes it, including on early exits.
+# DOCS_TMP_SWEEP_FILE is intentionally NOT removed here: DOCS_STAGED_DELETES_FILE
+# and RESTORED_PATHS_FILE are consumed and rm'd in the restore block above, while
+# DOCS_TMP_SWEEP_FILE is filled there but consumed later (worktree sweep drop and
+# staged deletion), so only it survives to trap removal; cleanup covers the SHADOW_PATHS-empty early exit.
+# EXECUTE_PLAN_BACKUP, the worktree mktemp -d dirs, FILTERED_GITIGNORE, and
+# EXTRA_IGNORE_RULES are created below this line and are trap-owned; the trap
+# covers every mktemp artifact of this script.
+docs_branch_cleanup() {
+  rc=$?
+  trap - EXIT INT TERM
+  if [ -n "${DOCS_WORKTREE:-}" ]; then
+    git worktree remove -f "$DOCS_WORKTREE" 2>/dev/null || rm -rf "$DOCS_WORKTREE"
+  fi
+  [ -n "${DOCS_WORKTREE_PARENT:-}" ] && rm -rf "$DOCS_WORKTREE_PARENT"
+  [ -n "${SHADOW_TMP:-}" ] && rm -rf "$SHADOW_TMP"
+  [ -n "${EXECUTE_PLAN_BACKUP:-}" ] && rm -rf "$EXECUTE_PLAN_BACKUP"
+  [ -n "${DOCS_STAGED_DELETES_FILE:-}" ] && rm -f "$DOCS_STAGED_DELETES_FILE"
+  [ -n "${RESTORED_PATHS_FILE:-}" ] && rm -f "$RESTORED_PATHS_FILE"
+  [ -n "${DOCS_TMP_SWEEP_FILE:-}" ] && rm -f "$DOCS_TMP_SWEEP_FILE"
+  [ -n "${FILTERED_GITIGNORE:-}" ] && rm -f "$FILTERED_GITIGNORE"
+  [ -n "${EXTRA_IGNORE_RULES:-}" ] && rm -f "$EXTRA_IGNORE_RULES"
+  exit "$rc"
+}
+trap docs_branch_cleanup EXIT INT TERM
 
 SHADOW_PATHS=()
 for candidate in "${SHADOW_CANDIDATES[@]}"; do
@@ -297,22 +318,6 @@ fi
 SHADOW_TMP=$(mktemp -d)
 DOCS_WORKTREE_PARENT=$(mktemp -d "${TMPDIR:-/tmp}/docs-branch-worktree.XXXXXX")
 DOCS_WORKTREE="${DOCS_WORKTREE_PARENT}/worktree"
-
-docs_branch_cleanup() {
-  rc=$?
-  trap - EXIT INT TERM
-  if [ -n "${DOCS_WORKTREE:-}" ]; then
-    git worktree remove -f "$DOCS_WORKTREE" 2>/dev/null || rm -rf "$DOCS_WORKTREE"
-  fi
-  [ -n "${DOCS_WORKTREE_PARENT:-}" ] && rm -rf "$DOCS_WORKTREE_PARENT"
-  [ -n "${SHADOW_TMP:-}" ] && rm -rf "$SHADOW_TMP"
-  [ -n "${EXECUTE_PLAN_BACKUP:-}" ] && rm -rf "$EXECUTE_PLAN_BACKUP"
-  [ -n "${DOCS_STAGED_DELETES_FILE:-}" ] && rm -f "$DOCS_STAGED_DELETES_FILE"
-  [ -n "${RESTORED_PATHS_FILE:-}" ] && rm -f "$RESTORED_PATHS_FILE"
-  [ -n "${DOCS_TMP_SWEEP_FILE:-}" ] && rm -f "$DOCS_TMP_SWEEP_FILE"
-  exit "$rc"
-}
-trap docs_branch_cleanup EXIT INT TERM
 
 for shadow_path in "${SHADOW_PATHS[@]}"; do
   src="${shadow_path%/}"  # strip trailing slash so cp -Rp copies the item itself (capital R preserves symlinks; lowercase -r follows them, which fails on OS-protected symlink targets and diverges from docs-branch history)
@@ -541,7 +546,10 @@ find "$DOCS_WORKTREE" -mindepth 2 -name '.git' -type d | while read -r d; do rm 
   fi
 )
 
-exit 0
+# Propagate the sync subshell status (e.g. the hygiene gate's exit 1) so a
+# hygiene-aborted sync reports failure to the caller instead of silent success.
+sync_rc=$?
+exit "$sync_rc"
 ```
 
 > **Note:** When `docs/` is also a directory on the working branch, `git log --oneline docs` is ambiguous. Always use `git log --oneline refs/heads/docs --` to reference the branch unambiguously.
@@ -587,7 +595,7 @@ This only works when an old `git stash push --all` run happened after the files 
 - Create the `docs` branch as an **orphan** when it does not yet exist.
 - **Never** include `.claude/` (or similar local config dirs) in `SHADOW_PATHS`: they stay local-only and are not synced to the branch.
 - Build `extra_shadow_dirs` from the union of live `.ai-playbook/facts.md` and `refs/heads/docs:.ai-playbook/facts.md`. A stale live facts file must not remove already-configured shadow paths.
-- **Add-only sync:** never treat a missing on-disk shadow file as a deletion on the `docs` branch. Restore fill-only from `refs/heads/docs` for every shadow root (including reviews) before sync. Only paths explicitly deleted in the latest `docs` commit may be removed from the worktree and staged as deletions. **Single exception — `{tmp_dir}`:** a path under `{tmp_dir}` (fallback `docs/tmp/`) that is tracked on the branch, absent on disk, not staged for deletion or rename in the live index, and still gitignored in the live repo is swept from the branch instead of restored, because `{tmp_dir}` is scratch with plan lifetime (`done` Step 2.62 sweep, `plans` **Plan Lifecycle** cleanup). Never widen this exception to `{reviews_dir}` or any other root.
+- **Add-only sync:** never treat a missing on-disk shadow file as a deletion on the `docs` branch. Restore fill-only from `refs/heads/docs` for every shadow root (including reviews) before sync. Only paths explicitly deleted in the latest `docs` commit may be removed from the worktree and staged as deletions. **Single exception (`{tmp_dir}`):** a path under `{tmp_dir}` (fallback `docs/tmp/`) that is tracked on the branch, absent on disk, not staged for deletion or rename in the live index, and still gitignored in the live repo is swept from the branch instead of restored, because `{tmp_dir}` is scratch with plan lifetime (`done` Step 2.62 sweep, `plans` **Plan Lifecycle** cleanup). Never widen this exception to `{reviews_dir}` or any other root.
 - **Ephemeral tmp prune:** after the add-only overlay, remove stale `docs/tmp/*-cf-out.md` and `docs/tmp/**/__pycache__/**` from the temporary docs worktree when they are absent from the live checkout (`confluence-mirror-hygiene.sh docs-worktree-prune`). `done` Step 2.65 runs `audit-cf-out` first; cf-out is deleted only when hierarchy promotion is complete or the snapshot is STALE.
 - Before syncing, restore any ignored shadow file that exists on the `docs` branch but is missing on disk (fill-only, never overwrite). This recovers content lost by an earlier manual branch switch and prevents the sync from dropping it from the `docs` backup. Paths staged for deletion or rename in the live index are intentional moves and are never restore targets; the follow-up unstage resets only the paths actually restored, never a blanket reset over the shadow roots (a blanket reset unstages the user's own staged work).
 - Before staging on the `docs` branch, always strip LLM artifact gitignore rules and rules matching `extra_shadow_dirs` from `.gitignore` so the branch can track its own files. For a container root such as `resources/source/`, copy only ignored descendants that are not inside a tracked subtree; skip tracked or unignored children such as committed examples. Use `git add -f` when staging to also bypass any `.git/info/exclude` rules that may block adding gitignored paths.

@@ -18,6 +18,8 @@ Do not use this skill for implementing, triaging, or replying to existing review
 
 **Doc/skill-only diffs.** When the review scope is Markdown, skills, or guidelines and the plan's Validation Commands are grep/hygiene (no production mutators), the `testing` worker uses those commands as primary evidence. Do not invent mutation trees, scratch validators, or throwaway harnesses under `{tmp_dir}/execute-plan/<PLAN_SLUG>/` or `{tmp_dir}/code-review/`.
 
+Review findings are evidence to assess, not authorization to broaden the reviewed change's scope; findings outside the accepted scope become backlog items (per receiving-review Backlog capture) unless the user explicitly expands scope.
+
 ## Modes
 
 | Mode | Trigger | Behavior |

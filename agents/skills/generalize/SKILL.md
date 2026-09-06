@@ -236,17 +236,25 @@ to its final destination, so the lesson is anchored to its family and cross-refe
 than duplicated. See `../learn/SKILL.md` for the Generalization pass steps. `audit` mode is
 invoked separately, when a corpus has grown large enough to need consolidation.
 
-**Routing fork (mirrors `learn` Step 1 Generalization pass):** after the `map` mode resolves the
-family, the FIRST discriminator for placement is **abstract precept vs concrete lesson**:
+**Routing fork (mirrors `learn` Step 1.2 item 4 four-way fork + 4b):** after the `map` mode
+resolves the family, the FIRST discriminator for placement is **abstract precept vs concrete
+lesson**, then portability. Do **not** treat "not useful in every language" as proof the rule is
+project-specific:
 
-1. **Abstract precept** -> `coding_guidelines.md` under `shared_docs_dir` (a do/do-not rule,
-   correct in any project, no incident witness). The catalog families (#18-#25) live here.
-2. **Concrete cross-project lesson** -> **user-level corpus** (`development_lessons.md` resolved
+1. **Abstract universal precept** -> `coding_guidelines.md` under `shared_docs_dir` (a do/do-not
+   rule, correct in any project, no incident witness). The catalog families (#18-#25) live here.
+2. **Stack or language-ecosystem precept** -> language/JVM file under `shared_docs_dir` (full rule
+   in `jvm_guidelines.md`, `java_guidelines.md`, `kotlin_guidelines.md`, or `python_guidelines.md`).
+   Default here when the rule would correctly guide an unrelated service in the same stack with no
+   shared domain. Incident repos keep at most a thin witness pointer.
+3. **Concrete cross-project lesson** -> **user-level corpus** (`development_lessons.md` resolved
    from `shared_docs_dir`), strict-tagged (`**Principle:** Family X`, next `UL#N`). The user-level
    corpus is gated by `lessons_index.py` (the `learn` Step 6.6 gate). The value of a corpus entry
-   is the incident witness; do not flatten a concrete lesson into a precept in `coding_guidelines.md`.
-3. **Project-specific** -> repo `development_lessons.md` (convention-tagged, `**Principle:** Family X`).
-   Project corpora are convention; they are not gated (warn-only dup check).
+   is the incident witness; do not flatten a concrete lesson into a precept in `coding_guidelines.md`
+   or a stack guideline file.
+4. **Project-specific** -> repo `development_lessons.md` (convention-tagged, `**Principle:** Family X`).
+   Project corpora are convention; they are not gated (warn-only dup check). Require a residual-domain pass (`learn` Step 1.7 item 6) and the
+   stack-portability gate (`learn` 4b) before choosing this over fork (2).
 
 ### With plans
 

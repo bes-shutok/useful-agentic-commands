@@ -12,6 +12,8 @@ description: "Jira workflow for creating/updating Jira stories and creating git 
 - For rollout or verification tickets, keep the issue body focused on the outcome to verify; put environment-specific manual test procedures and tactical technical caveats in comments, not in the main description.
 - Avoid retrospective phrasing.
 - When a user wants a ticket to stand on its own, describe the substance of the change directly instead of relying on rollout labels or phase names as shorthand.
+- When a request names an incident or work-management system as the authoritative destination, confirm that destination before creating a convenience ticket elsewhere. If a secondary tracker is useful, label it as convenience-only, link it to the primary action, and do not present it as a replacement.
+- If an implementation ticket expands into a multi-source investigation, convert it to a spike and require source-specific implementation tasks as deliverables; do not hide the expanded work inside one implementation ticket.
 - When adding links in Jira descriptions or comments, use standard markdown link syntax: put the title in `[]` and the URL in `()`.
 - Before proposing a manual verification scenario, verify that the induced failure exercises the component under change rather than only a downstream dependency.
 - When replanning a sequential backlog, reuse existing placeholder Jira keys when the user asks for ticket-number parity with implementation order; do not create new keys unless placeholders are exhausted or the user requests new issues.

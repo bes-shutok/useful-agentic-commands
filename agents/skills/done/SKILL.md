@@ -11,6 +11,10 @@ description: >
 
 Run `/learn` to capture lessons from this session, then commit all uncommitted changes across all repositories touched during the session.
 
+## Repository scope ledger
+
+Before Step 0, inventory every repository touched by the task from tool activity, the user's explicit scope, and repository status. `done` applies to each applicable repository, not only the repository containing the latest artifact or the current working directory. Process each project repository independently through Steps 0-3 with its own lock, then run the shared skills and docs/facts commit checks. Never report completion while a touched repository remains unverified or uncommitted.
+
 ## Invocation (read first)
 
 `done`, `learn`, and `docs-branch` are **markdown skills**, not shell commands or binaries. There is no runner under `~/.ai-playbook/runtime` and no `/learn` executable.
@@ -19,7 +23,7 @@ Run `/learn` to capture lessons from this session, then commit all uncommitted c
 - **Do not** delegate this workflow to a Task/subagent that tries to exec a skill path.
 - **Do** read each skill file (`~/.agents/skills/<name>/SKILL.md`) and execute its steps in **this** agent session using normal tools (shell for scripts, Read/Write for skill logic).
 
-**Workflow continuity:** This skill executes as a continuous sequence of steps (0 → 1 → 2.65 → 2.64 → 2.63 → 2.62 → 2 → 2.5 → 2.6 → 2.7 → 2.75 → 2.76 → 2.8 → 3 → 4 → 5 → 6 → 7). After each step or skill invocation completes, immediately proceed to the next step without stopping or waiting for user input. Only stop if a step fails, produces an error, or requires user clarification. **Exception:** Step 0 uses a short agent wait (`DONE_LOCK_AGENT_MAX_WAIT_SECS`, default 90s); on timeout return `blocked` with lock `status` instead of polling for hours. **An empty project working tree is not a stop condition:** still run Steps 2.65, 2.64, 2.63, 2.62, 2, and 6 and finish with Step 7.
+**Workflow continuity:** This skill executes as a continuous sequence of steps (0 → 1 → 1.5 → 2.65 → 2.645 → 2.64 → 2.63 → 2.62 → 2 → 2.5 → 2.6 → 2.7 → 2.75 → 2.76 → 2.8 → 3 → 4 → 5 → 6 → 7). After each step or skill invocation completes, immediately proceed to the next step without stopping or waiting for user input. Only stop if a step fails, produces an error, or requires user clarification. **Exception:** Step 0 uses a short agent wait (`DONE_LOCK_AGENT_MAX_WAIT_SECS`, default 90s); on timeout return `blocked` with lock `status` instead of polling for hours. **An empty project working tree is not a stop condition:** still run Steps 2.65, 2.645, 2.64, 2.63, 2.62, 2, and 6 and finish with Step 7.
 
 ## Configuration (from facts document)
 
@@ -80,6 +84,21 @@ Parallel agent sessions on the **same git repository** must not run `learn`, `do
 
 **After the lock is acquired, immediately continue to Step 1.** Do not run learn, docs-branch, or project commits before Step 0 succeeds.
 
+**Run-start marker:** immediately after the lock is acquired, write an empty per-run marker file under `{tmp_dir}/done-session/` named `run-start-<UTCtimestamp>` (filename format `run-start-YYYYmmddTHHMMSSZ`, UTC; create the directory if missing). Step 1.5 anchors this run's session window on the newest marker written by a previous done run. Marker pruning is governed solely by the Step 2.62 sweep.
+
+```bash
+REPO_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+TMP_DIR="$(sed -n 's/^tmp_dir = ["'\'']\(.*\)["'\'']$/\1/p' "$REPO_TOP/.ai-playbook/facts.md" 2>/dev/null | head -n 1)"
+TMP_DIR="${TMP_DIR:-$REPO_TOP/docs/tmp/}"
+case "$TMP_DIR" in /*) ;; *) TMP_DIR="$REPO_TOP/$TMP_DIR";; esac
+mkdir -p "${TMP_DIR%/}/done-session"
+MARKER="${TMP_DIR%/}/done-session/run-start-$(date -u +%Y%m%dT%H%M%SZ)"
+MARKER="$(cd "$(dirname "$MARKER")" && pwd)/$(basename "$MARKER")"
+: > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"
+```
+
+Keep the echoed marker path in chat context; Step 1.5 (anchor discrimination) and the Step 2.62 sweep (current-run marker immunity) reuse it across separate shell calls. If it is lost or matches no marker at gate time, Step 1.5 treats the window as unanchorable (conservative gating) and the Step 2.62 sweep prunes no `run-start-*` markers this run; never guess by recency.
+
 ## Step 1: Run Learn
 
 Invoke the `learn` skill now to extract lessons and update the documentation corpus before committing.
@@ -87,6 +106,27 @@ Invoke the `learn` skill now to extract lessons and update the documentation cor
 **If `learn` reports a blocked state** (Step 6.6 user-corpus violation: a strict-tagged `UL#N` lesson is missing its `**Principle:** Family X` tag, or the gate script returned non-zero on the adopted corpus), release the lock via Step 6 and return `blocked` WITHOUT proceeding to Step 2 commit. `learn` is invoked here as a SKILL (a sub-procedure), not as a subprocess whose exit code this step checks, so the gate's block decision lives in `learn`'s Step 6.6 text and propagates here through `learn`'s returned state. The operator fixes the user corpus out-of-band (classify the listed `UL#N` via learn/generalize, or run `lessons_adopt.py --tag-unclassified <user_corpus>` manually) before the next `done`.
 
 **After learn completes, immediately continue to Step 2.65.** Do not stop or wait for user input; the workflow is continuous and all steps should execute in sequence.
+
+## Step 1.5: Plan readiness gate (this session's plan deliverables)
+
+This gate applies ONLY to plans that are **this session's deliverable**: a plan file under the resolved `{plans_dir}` that is untracked or modified relative to HEAD at done time (`git status --porcelain -- <plans_dir>`), or a plan path listed in `{tmp_dir}/done-session/plan-deliverables.txt` (one repo-relative path per line; ignore blank lines and `#` comments). Plain `git status --porcelain` is inert when `{plans_dir}` is gitignored (a shadow-path repo hides untracked plans), so also run the ignored-matching arm `git status --porcelain --ignored=matching -- <plans_dir>`; a plan the ignored arm lists with the ignored marker (`!!`) counts as a session-deliverable candidate when that same path is listed in `{tmp_dir}/done-session/plan-deliverables.txt` or its modification time falls inside the session window (an unlisted `!!` plan with a modification time outside the window belongs to its authoring session and gets no gate). The session window's anchor is the newest `run-start-` marker written by a previous done run under `{tmp_dir}/done-session/` (every done run writes its own marker at Step 0; the current run's own marker (identified by the marker path echoed at Step 0, re-read from chat context across shell calls) does not anchor its own window; if the echoed marker path is lost or matches no marker under `{tmp_dir}/done-session/` at gate time, apply the Step 0 echo-loss fallback (unanchorable window; the conservative-gating branch below applies); never substitute the newest on-disk marker; the window runs from the anchor marker's timestamp to gate time). When no marker from a previous run exists at all, the window is unanchorable: apply conservative gating and treat every `!!` plan as this session's deliverable (the gate names each gated plan; it never silently skips them). **Producers (must run before this gate):** (1) any plan-file mutation under `{plans_dir}` (excluding `{plans_completed_dir}`) appends the path to `{tmp_dir}/done-session/plan-deliverables.txt` (create the directory/file if missing; one repo-relative path per line; skip duplicates) (the `plans` skill does this on every Write, Edit, or StrReplace; any other skill or tool that mutates a plan file under `{plans_dir}` does the same); (2) any `git commit` that stages `{plans_dir}` paths appends those paths in the same turn before `git commit` returns (binding agent commit hygiene; see Step 3 item 0b). It does NOT sweep every plan under `{plans_dir}`: committed stale plans this session never touched and never listed get **no gate and no refusal** (they belong to their authoring session), and `{plans_completed_dir}` is explicitly excluded even when nested under `{plans_dir}` (completed plans are archived, not pending). The gate does NOT apply while the mechanical `execute-plan` marker is present: `{tmp_dir}/execute-plan/<PLAN_SLUG>/manifest.md` exists and records `workflow_state: active` (gate on that marker, never on caller-identity prose) AND that manifest carries an `updated:` timestamp (ISO8601, refreshed by the orchestrator on every manifest update) no older than 24 hours at done time; a stale or abandoned manifest grants NO exemption: an active manifest with no `updated:` line, or one older than 24 hours, is stale: the exclusion does not apply and the gate runs (treat the run as interrupted-and-drifted: the non-stop path below is a fresh `review-plan` round of the current bytes). `<PLAN_SLUG>` = the candidate plan's basename without `.md`, same as execute-plan Step 0.4. A legitimate resumed run re-establishes the fresh witness via the orchestrator's resume-time manifest refresh (execute-plan Step 0.4: the first action on resume is updating the manifest's `updated:` timestamp and confirming `workflow_state: active`), not via per-task review rounds. Such runs' checkbox marks (`- [ ]` → `- [x]`) legitimately mutate the plan digest after the final review round, and that mutation is covered by `execute-plan`'s Phase 3 fresh-review rule, not by this gate; for checkbox drift on an interrupted `execute-plan` run (marker present, run stopped, plan bytes drifted beyond the Step 0.5 resume exemption), the non-stop path is a fresh `review-plan` round of the checkbox-marked bytes, which re-binds the digest. When the gate applies, verify plan readiness before finalizing; run this gate once per repo that has a resolved `{plans_dir}` (a done session may commit across multiple repos). Run the readiness validator with the project git root as cwd, resolving the script via env-var override with two fallbacks (repo-local copy if present, then the deployed runtime copy; this skill may run in any consumer repo, not only the repo that ships the script):
+
+```bash
+GATE_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+PLAN_READINESS_VALIDATOR="${PLAN_READINESS_VALIDATOR:-}"
+if [ -z "$PLAN_READINESS_VALIDATOR" ] && [ -f "$GATE_TOP/scripts/plan_readiness.py" ]; then
+  PLAN_READINESS_VALIDATOR="$GATE_TOP/scripts/plan_readiness.py"
+  echo "readiness gate: using repo-local validator $PLAN_READINESS_VALIDATOR" >&2
+fi
+PLAN_READINESS_VALIDATOR="${PLAN_READINESS_VALIDATOR:-$HOME/.ai-playbook/scripts/plan_readiness.py}"
+python3 "$PLAN_READINESS_VALIDATOR" <plan-path>
+```
+
+- **Exit 0:** the latest review of these exact plan bytes reports `ready=yes` with a valid sidecar; continue to Step 2.65. Removal rule for `{tmp_dir}/done-session/plan-deliverables.txt`: remove every line listing that path after it passes the gate, after it is exempted via the manifest marker (the `execute-plan` mechanical exemption above), or after it is recorded-stopped; and every line listing a path that no longer exists under `{plans_dir}` (e.g. it archived to `{plans_completed_dir}`) is skipped as archived, not gated, and likewise removed. This keeps a later `done` in the same chat from re-gating stale or already-exempted entries.
+- **Non-zero exit:** **refuse to finalize**. Report the first failed readiness condition to the user and require a fresh `review-plan` round (after any plan edit that changes the digest) before re-running this gate. **Deployment-gap signature (narrow, r5 Y8):** a deployment gap is ONLY (a) the validator file itself missing or unopenable, or (b) a `ModuleNotFoundError` in the output. For either: stop and report the wiring gap, and never use the recorded-stop exception for it; manual remedy: `cp scripts/plan_readiness.py ~/.ai-playbook/scripts/` plus siblings (the script imports `validate_review_staging.py` and `facts_paths.py` from its own directory, so copy all three; the deployed `facts_paths.py` may be a symlink, keep it one, e.g. `cp -P`, do not dereference it into a second copy). Any OTHER non-zero exit that prints no `readiness FAILED:` line (validator crash, traceback, unexpected output) is NOT covered by that copy remedy: investigate the validator before re-running the gate.
+- **Recorded-stop exception:** the only permitted way past a failed gate is when the user explicitly chooses to stop without finalization and that choice is recorded in the session log. In that case do not commit the plan deliverable: record the excluded plan path in the session log and, in this session's later commit-all steps, exclude exactly that path plus its review artifacts (the review Markdown and `.stats.json` sidecar under `{reviews_dir}`) when staging, then continue with the remaining hygiene steps and report the recorded stop in Step 7. Also remove every line listing the excluded path from `{tmp_dir}/done-session/plan-deliverables.txt` so it does not reappear as a gate target.
+
+**After Step 1.5 completes (or does not apply), immediately continue to Step 2.65.**
 
 ## Step 2.65: Confluence mirror and ephemeral tmp hygiene
 
@@ -144,7 +184,31 @@ HYGIENE="${CONFLUENCE_MIRROR_HYGIENE_SCRIPT:-${HOME}/.ai-playbook/scripts/conflu
 
    Removes `__pycache__` always; removes `*-cf-out.md` only when step 1 marked them STALE. Aborts when promotion is still pending.
 
-**After Step 2.65 completes, immediately continue to Step 2.64.**
+**After Step 2.65 completes, immediately continue to Step 2.645.**
+
+## Step 2.645: Backlog inbox location gate
+
+Before `docs-branch`, verify no backlog-inbox-shaped file sits outside the resolved backlog home. This is the mechanical second line of defense behind the `receiving-review` skill hardening (2026-08-30 invented-destination incident). Run it over the validator's full scan surface: rule 2 over the tracked tree plus rule 1 hot-dir filesystem walk (untracked and gitignored shadow-tree files included).
+
+```bash
+VALIDATOR="${BACKLOG_LOCATION_GATE:-$HOME/.ai-playbook/scripts/check_backlog_inbox_location.py}"
+GATE_TOP="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+if [ ! -f "$VALIDATOR" ] && [ -f "$GATE_TOP/scripts/check_backlog_inbox_location.py" ]; then
+  VALIDATOR="$GATE_TOP/scripts/check_backlog_inbox_location.py"
+  echo "backlog gate: using repo-local validator $VALIDATOR" >&2
+fi
+if [ ! -f "$VALIDATOR" ]; then
+  echo "warning: check_backlog_inbox_location.py not found; skipping backlog inbox location gate" >&2
+else
+  python3 "$VALIDATOR" || exit 1
+fi
+```
+
+Fail-open rationale: the done skill is vendored to project repos where the copy-sync redeploy has not landed; a hard abort there would block every commit until an external redeploy. When a copy exists, the gate fails closed (`|| exit 1`).
+
+On failure, remediate before continuing (disposition-dependent, never a silent move that misfiles real content): a file that is genuine backlog material moves into the resolved `{backlog_dir}` per `receiving-review` Backlog capture (rename to the `YYYY-MM-DD-<slug>.md` convention when needed); a legitimate Layer 2 doc that merely trips the filename shape is renamed to a compliant name, asking the user when the run is interactive.
+
+**After Step 2.645 completes, immediately continue to Step 2.64.**
 
 ## Step 2.64: Review staging hygiene
 
@@ -192,10 +256,11 @@ Remove only verified stale Vim swap files before `docs-branch` snapshots ignored
    - `execute-plan/<slug>/` whose plan file is no longer under `{plans_dir}/` (it archived to `{plans_completed_dir}/`): remove the whole session dir.
    - `plan-requirements-<slug>.md` whose plan is in `{plans_completed_dir}/`: remove.
    - `review-loop*`, `code-review/`, `handoff/` scratch: leave in place. A plan-less review loop has no liveness witness (the plan check cannot see it), and `done` runs inside review-loop's own fix cycles, so removing these here can delete an ACTIVE loop's unsynced staging. Their owning skills (review-loop, doing-code-review, handoff) remove them when their staging is final.
+   - `done-session/`: owned by `done`. Remove `run-start-*` markers strictly older than the newest marker written by a previous done run; NEVER remove the newest previous-run marker (it is this run's session-window anchor) or the current run's marker (it is the next run's anchor). `plan-deliverables.txt` is governed by the Step 1.5 removal rule, not this sweep. If the echoed marker path is lost or matches no marker under this directory, prune no `run-start-*` markers this run (never guess by recency).
    - One-off scripts and log notes (`.py`, `*.log.md`, dated one-off `.md`) with no pointer from a tracked doc and not from the current session: remove.
    - Anything else (unclear ownership, active work): leave in place and report it.
 2. Never remove an ACTIVE `execute-plan` session: its dir contains `manifest.md` and its plan still sits under `{plans_dir}/`.
-3. Sweep without prompting; removals stay recoverable from the `docs` branch history (the sweep deletion's parent commit) **only when a prior sync captured them** — a never-synced file's removal is permanent, so when presence on `refs/heads/docs` is uncertain, skip the file and report it instead. Report the removed list in the step summary.
+3. Sweep without prompting; removals stay recoverable from the `docs` branch history (the sweep deletion's parent commit) **only when a prior sync captured them**; a never-synced file's removal is permanent, so when presence on `refs/heads/docs` is uncertain, skip the file and report it instead. Report the removed list in the step summary.
 4. Deletion propagation is the `docs-branch` sync's job (its `{tmp_dir}` sweep-eligible root drops branch copies in the same Step 2 run); do not hand-edit the docs branch here.
 
 **After Step 2.62 completes, immediately continue to Step 2.**
@@ -387,7 +452,9 @@ Do not stage instruction entrypoints for commit while **gate** fails.
 
 After learn and stash steps complete:
 
-0. **Distinguish session changes from pre-existing local changes.** Only commit changes that were made during this session. If `git status` shows uncommitted files that were not touched by you in this session, ask the user before staging them; they may be in-progress work the user does not want committed yet.
+0b. **Plan-deliverable append (producer 2 for Step 1.5):** Before any `git commit` in this session that stages paths under `{plans_dir}` (excluding `{plans_completed_dir}`), append each staged plan path to `{tmp_dir}/done-session/plan-deliverables.txt` (create dir/file if missing; one repo-relative path per line; skip duplicates). Do this in the same turn as the commit, including when the commit is not part of `done`.
+
+0. **Distinguish session changes from pre-existing local changes.** Only commit changes that were made during this session. If `git status` shows uncommitted files that were not touched by you in this session, ask the user before staging them; they may be in-progress work the user does not want committed yet. For cleanup or restoration sessions, capture the dirty-tree and untracked-file baseline before the first edit: always record the git status --porcelain baseline in the session notes before the first edit; additionally run the cleanup baseline checker scripts/check_cleanup_scope_baseline.py against the task's scope ledger when the task's scope ledger exists (resolve the skills repo checkout from the skills-repo path key in the user facts document and pass this repo via --repo-root). Refuse to stage any path that was already dirty or untracked at baseline unless the user explicitly includes it. Checker exit codes: exit 1 means a path outside the ledger is dirty or deleted, so ask the user before staging it; exit 2 means the checker could not run, so fall back to the recorded session-notes baseline; if the checker exits 2 and no recorded baseline exists, ask the user before staging any path not created or modified this session. Run the checker before the first commit of the session for full coverage; after commits exist, only deletions remain checkable (against the ledger's session-start base ref, never with `--base HEAD`), because committed non-deletion sweeps are invisible at any base ref once committed: assess committed modifications from the recorded session-notes baseline instead. If no pre-edit baseline exists at done time (whatever the reason: checker never run, exit 2 with no recorded baseline, or baseline recorded after edits), ask the user before staging any path not created or modified this session; a baseline recorded after edits is not a baseline. Checker limitations: it cannot see gitignored files (capture the ignored set with `git status --porcelain --ignored` and record those paths in the session notes explicitly), and it matches allow-list paths byte-exact relative to the repo root (no `./` prefix). If the skills-repo path key is missing or unresolvable, record the session-notes baseline and note that the checker was skipped.
 1. Run `git status` and `git diff` (staged + unstaged) to see all changes.
    **Pre-commit guard (post sub-agent git op):** Step 2 `docs-branch` (and any prior sub-agent `git worktree`/`git checkout`/`git stash` operation) can leave the main repo's index/worktree in a REVERTED state relative to HEAD while HEAD stays correct. Before staging, run `git diff --cached --stat`: if it shows large deletions across files you did not edit this iteration (e.g. +73/-1062 across 14 files) OR the test count dropped vs the last known-good count on HEAD, a leaked revert is staged. Run `git reset --hard HEAD`, re-stage only your intended edits, then re-verify. Never use `git add -A`/`git add .` here, or the rollback is swept into the commit. (Witness: 2026-07-23 group-leftover-crypto-warnings r6; see project `development_lessons.md` lesson on this family.)
 2. Run `git log --oneline -5` to match existing commit message style.

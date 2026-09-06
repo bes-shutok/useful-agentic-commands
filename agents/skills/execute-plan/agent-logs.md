@@ -128,6 +128,7 @@ After each sub-agent completes, append to `manifest.md`:
 # Execute-plan session: <PLAN_SLUG>
 
 workflow_state: active
+updated: <ISO8601 timestamp>
 
 | Step | Log path | Status |
 |------|----------|--------|
@@ -139,7 +140,7 @@ workflow_state: active
 | source_digest | (none) | `<sha256>` |
 ```
 
-The orchestrator passes the manifest path plus only the preceding-step log paths into each `done` prompt. Update the review counters and digest after each Step 3.4.
+The orchestrator passes the manifest path plus only the preceding-step log paths into each `done` prompt. Update the review counters and digest after each Step 3.4. Refresh the `updated:` timestamp on EVERY manifest update (Step 1.4 / Step 3.4 verification-gate updates and Step 3.5 counter refreshes alike); it is the freshness witness the `done` Step 1.5 staleness rule reads. On resume of an existing run, the orchestrator's first action is a manifest update refreshing `updated:` (and confirming `workflow_state: active`) before relaunching any sub-agent.
 
 ## Done sub-agent: required reads before learn
 

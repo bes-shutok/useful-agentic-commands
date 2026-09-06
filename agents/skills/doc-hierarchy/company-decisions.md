@@ -12,6 +12,7 @@ Source: internal team decision thread, May 18 - Jun 11, 2026. Participants: tech
 4. **Specs and clarifications from feature work are valuable** when they cannot be inferred from code alone, preserve in project, not only in tickets.
 5. **Layer 1 lives in the repo** (team preference) so it evolves with PRs; broader team wiki/Confluence may hold even shorter overviews but repo `docs/README.md` is canonical for service-level onboarding.
 6. **Same hierarchy applies to new company microservices** and other company service repos adopting the layout (team agreement).
+7. OpenAPI is the single wire source of truth; caller catalogs thin-index to it. Living Layer 1/2 prose cites durable capability names (plus RFC/ADR links), not issue keys; issue keys belong to Layer 3, plans, backlog, and tracker workflow, so ticket churn never churns living docs. (Principle 7 provenance: synthesized 2026-09-04 from backlog item `2026-09-02-living-docs-capability-names-and-openapi-wire-sot`; not part of the May–June 2026 decision thread recorded above.)
 
 ## Three layers
 

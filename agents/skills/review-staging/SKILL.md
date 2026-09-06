@@ -84,6 +84,7 @@ Every review orchestrator (plan, branch, PR, RFC, Confluence) **must** populate 
 10. **Budget:** fully expand every Critical, every blocking finding, up to five additional non-blocking High/Medium findings per worker, and up to two additional non-blocking Low findings per worker.
 11. **Overflow:** additional credible non-blocking candidates go under `### Overflow manifest` with Worker, Pattern, Anchor, Severity, Confidence, and one-line Consequence.
 12. **Soften watchlist:** when the review is part of a `review-loop` (or any multi-round branch review), include `### Soften watchlist` under `## Review Statistics`. Carry forward open rows from the previous round; update statuses after workers reaffirm or restage. Use `None.` when the run has no softened findings yet.
+13. **Fan-out findings:** A fan-out finding, per the fan-out policy in `review-panel-selection`, records the canonical home and the list of peer restatements in its Analysis; peers resolve by pointer conversion or one pointer-cleanup backlog item, not as independent contract bugs.
 
 ### Discard reason codes (use exactly one per discarded row)
 
@@ -351,7 +352,7 @@ Required top-level fields (all must be present; enum-typed fields use `null` whe
 | `overflow` | array; never contains a Critical or blocking finding |
 | `soften_watchlist` | array; `[]` when none |
 
-Optional top-level fields: `depth` (string), `domains` (list), `extensions` (object). Any other top-level field is rejected; future extensions belong inside the object-valued `extensions` (a non-object `extensions` value is rejected).
+Optional top-level fields: `depth` (string), `domains` (list), `verdict` (string `yes` or `no`; the plan-review producer writes it alongside the `## Summary`), `extensions` (object). Any other top-level field is rejected; future extensions belong inside the object-valued `extensions` (a non-object `extensions` value is rejected).
 
 Canonical Pattern IDs (version-1): findings, overflow items, and discarded rows that carry a pattern must use `<lens>#<kebab-slug>` with an owner from the declared set in **Pattern id format**. A version-1 finding must also carry the same canonical `pattern` in its Markdown `- **Pattern**:` bullet; a missing or differing Markdown Pattern is a conservation error.
 

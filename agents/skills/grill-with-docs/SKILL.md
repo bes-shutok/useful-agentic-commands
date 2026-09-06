@@ -31,5 +31,8 @@ This skill is a documented combination of `grilling` plus inline `domain-modelin
 ### With `premortem` skill
 After shared understanding and docs are captured, offer `premortem` for failure-mode analysis.
 
+### With `execute-plan` skill
+`execute-plan` Step 1.3b (Layer 2 documentation checkpoint) invokes this skill when the correct SOT owner, document role, or placement for documentation touched during execution is genuinely unclear; the checkpoint pauses for the grill instead of duplicating or contradicting existing docs. Same one-question-at-a-time and inline glossary/ADR rules as the `plans` Phase 1 path.
+
 ### With `rfc-design` / `plans` skills
-`plans` Phase 1 invokes this skill through its confidence gate whenever an unclear requirement point is rated low-confidence; confirmed answers feed the plan's requirements buffer, while high-confidence points skip the grill and are listed in the plan's `## Assumptions` section instead. When the subject is a feature design or implementation plan, reference the RFC or plan path once it exists; write ubiquitous terms to the repo glossary, not duplicated into chat.
+`plans` Phase 1 invokes this skill through its confidence gate whenever an unclear requirement point is rated low-confidence; confirmed answers feed the plan's requirements buffer, while high-confidence points skip the grill and are listed in the plan's `## Assumptions` section instead. When the subject is a feature design or implementation plan, reference the RFC or plan path once it exists; write ubiquitous terms to the repo glossary, not duplicated into chat. The plans skill's Phase 1 scope-extension hard gate routes every proposed scope extension through this interview before the plan file admits it; record the in / split / defer decision inline per this skill's glossary and ADR capture.

@@ -192,6 +192,17 @@ Also apply doc-type rules:
 | **Markdown docs in PR** | Plain language; no duplicate sections; link instead of pasting long excerpts |
 | **Plan / RFC prose** | Tasks self-explanatory via naming; no telegraphic bullets without subjects |
 
+### Living-doc gates: capability names, wire SOT, and consolidation
+
+Apply to prose in living Layer 1/2 documentation (overviews, architecture and maintenance topics) alongside the decision-order gates above; these checks stage findings, they do not reorder the gates.
+
+- **Ticket-as-gate:** Living Layer 1/2 prose must not use an issue key (for example `PROJ-1234`) as the primary gate label; prefer a durable capability name plus an optional RFC/ADR link, and keep issue keys in Layer 3 history, plans, backlog, and tracker workflow surfaces.
+- **Second wire SOT:** When a caller catalog restates OpenAPI schemas, enums, or status maps, stage `catalog is second wire SOT; thin-index to OpenAPI` (replace restated tables with a pointer plus audience-specific delta), not `update the catalog table to match`.
+- **Authority roles:** OpenAPI wire shape, workflow/domain Layer 2 rules, API examples, glossary entries, ADRs, and historical documents are separate authorities; duplicated normative prose within one authority consolidates to its owning document, while cross-authority references are pointers, not second SOTs. Do not flag legitimate audience-specific content as duplication.
+- **Consolidation finding shape:** When the same normative workflow rule appears in several living documents, stage one consolidation finding that names the proposed canonical owner from the documentation hierarchy and replaces peer copies with audience-specific pointers or deltas.
+
+Use pattern `documentation#prose-<slug>` for these findings (for example `documentation#prose-ticket-as-gate`, `documentation#prose-second-wire-sot`).
+
 ### Outdated documentation: remove or freeze
 
 Apply when a comment, doc section, or document contradicts what the current code does and appears outdated: the code moved on and the prose still describes the old behavior, contract, or architecture.

@@ -27,6 +27,8 @@ If a *fact* can be found by exploring the environment (filesystem, tools, etc.),
 
 Do not act on it until I confirm we have reached a shared understanding.
 
+**Mandatory ambiguity triggers (cleanup and restoration):** when a request says simplify, remove, delete, clean up, clean the branch, restore, or make it match the base, or otherwise asks to remove, revert, or reduce files toward an earlier state, or whose natural fulfillment includes deleting, reverting, or reorganizing files (tidy, organize, dedupe), and the working tree or branch (including committed changes relative to the base) contains more than the obvious feature work, or git status shows pre-existing paths you did not create or modify this session, ask one focused scope question before any edit or restore operation. Recommended wording: Should I change only the files, classes, and methods required by this feature, while preserving every other file and all pre-existing uncommitted content? Do not treat cleanup wording as permission to make the branch resemble its base; distinguish the task-owned diff from pre-existing work before touching anything.
+
 ## Integration Points
 
 ### With `premortem` skill
