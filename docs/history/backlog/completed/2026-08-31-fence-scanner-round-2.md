@@ -1,6 +1,6 @@
 # Fence scanner round 2: fail-loud swallowed-metadata diagnostic, duplicate consumer contract
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/plans/2026-08-31-fence-close-rules.md r1 review; residual follow-ups split out when closing docs/history/backlog/completed/2026-08-29-fence-scanner-followups.md
 

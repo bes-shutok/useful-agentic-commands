@@ -1,6 +1,6 @@
 # Validator test-coverage follow-ups: hardcoded null-rejection fields, partial empty-flag loud-exit coverage, r7 test twins
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-08-28-review-artifact-contracts-code-review-r6.md, round r6, findings F9 + F10 (validated as real test gaps; deliberately deferred); docs/reviews/2026-08-28-review-artifact-contracts-code-review-r7.md, round r7, findings F1 + F2 (test twins for the r6 scoped fixes; deferred to avoid another digest mutation)
 

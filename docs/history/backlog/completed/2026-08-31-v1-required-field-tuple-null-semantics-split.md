@@ -1,6 +1,6 @@
 # Backlog: split the version-1 required-field type tuple by None semantics
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-08-31-branch-review-2026-08-30-v1-gate-trio-r2.md, round r2, finding F4 (Low, simplification#shrink)
 

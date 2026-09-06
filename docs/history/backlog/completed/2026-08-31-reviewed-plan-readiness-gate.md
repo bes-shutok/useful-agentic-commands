@@ -1,6 +1,6 @@
 # Backlog: enforce reviewed-plan readiness before execution and finalization
 
-Status: open
+Status: done (executed 2026-09-04; plan archived at docs/plans/completed/2026-09-03-reviewed-plan-readiness-gate.md)
 Workflow: backlog
 Source: 2026-08-31 session, CRM-688 plan workflow failure and follow-up analysis
 Severity: Medium (workflow safety, implementation-blocking)

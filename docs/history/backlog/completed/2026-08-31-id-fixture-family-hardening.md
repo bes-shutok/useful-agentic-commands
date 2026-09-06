@@ -1,6 +1,6 @@
 # Backlog: id-fixture family hardening pass (triple-duplicate pin; runner early-mutation hook)
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-08-31-branch-review-2026-08-30-v1-gate-trio-r4.md, round r4 (testing#weak-assertion and design-simplicity#duplicated-fixture-runner-machinery, both deferred)
 

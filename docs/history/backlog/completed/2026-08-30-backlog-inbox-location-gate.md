@@ -1,6 +1,6 @@
 # Backlog: mechanical gate rejecting backlog-inbox files outside `{backlog_dir}`
 
-Status: open
+Status: done (implemented 2026-09-03; plan archived to docs/plans/completed/)
 Workflow: backlog
 Source: 2026-08-30 session (invented-backlog-destination incident on a private
 service repo, ticket id elided; receiving-review Backlog capture)

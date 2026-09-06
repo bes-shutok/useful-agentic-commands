@@ -1,6 +1,6 @@
 # Telemetry lock file symlink TOCTOU (O_NOFOLLOW missing)
 
-Status: open
+Status: closed 2026-09-01 (fixed by docs/plans/2026-09-01-summarizer-publish-lock-hardening.md: O_NOFOLLOW lock open)
 Workflow: backlog
 Source: docs/reviews/2026-08-28-review-artifact-contracts-code-review-r1.md, round r1, risk worker, pattern `security#symlink-lock-toctou` (Discarded table, out-of-scope; validated as a real defect)
 
@@ -23,3 +23,7 @@ Low/Medium (local attacker with write access to the private telemetry dir; pre-e
 ## Why not fixed now
 
 Out of scope for the review-artifact-contracts receiving-review run: the defect pre-exists on main and the branch did not touch the lock path (risk worker verified). Decision made by the receiving-review agent per orchestrator instructions ("create a durable backlog item; do not fix the code in this run").
+
+## Residual risk
+
+The same threat model (local actor with write access breaking the private-dir guarantee via symlink swap) remains open at directory/file granularity for the private-path helpers that rely on pre-check-only symlink defenses (`ensure_private_dir`, `_atomic_write_private`, `tighten_parent_ai_playbook`, `read_private_file`); the kernel-grade fix is out of scope for the closing plan and is tracked by the successor item `docs/history/backlog/2026-09-01-private-dir-symlink-toctou.md`.

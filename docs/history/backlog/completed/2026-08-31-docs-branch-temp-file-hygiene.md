@@ -1,6 +1,6 @@
 # Backlog: docs-branch temp-file hygiene pass (trap registration ordering)
 
-Status: open
+Status: done (executed 2026-09-04 via docs/plans/2026-09-03-docs-branch-temp-file-hygiene.md; archived to docs/plans/completed/)
 Workflow: backlog
 Source: docs/reviews/2026-08-31-branch-review-2026-08-30-v1-gate-trio-r6.md, round r6, finding F5 (Low, security#cleanup-trap-registered-after-resource-creation); residual of the r2 F2 fix
 

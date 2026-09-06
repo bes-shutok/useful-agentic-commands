@@ -1,6 +1,6 @@
 # Backlog: drop the two redundant null keep-valid fixtures in the version-1 selftest family
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-08-31-branch-review-2026-08-30-v1-gate-trio-r2.md, round r2 (design-simplicity raw finding, recorded as discarded/deferred, simplification#delete)
 

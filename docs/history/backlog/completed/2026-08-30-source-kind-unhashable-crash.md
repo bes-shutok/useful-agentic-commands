@@ -1,6 +1,6 @@
 # Backlog: unhashable `source_kind` value crashes the membership gate with a TypeError
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-08-30-plan-review-v1-gate-trio-r1.md, round r1, finding F1 (High, blocking on the original Task 1 fixture row; the v1-gate-trio plan re-scoped `source_kind` out of its gate set and captured the pre-existing crash vector here instead)
 

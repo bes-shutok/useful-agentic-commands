@@ -1,12 +1,13 @@
 # Summarizer + CLI follow-ups: publish-retry stale snapshot race, source-flag triplication
 
-Status: open
+Status: done
+Completion: Completed by docs/plans/completed/2026-09-02-summarizer-hardening-round-2.md (executed + reviewed 2026-09-04/05).
 Workflow: backlog
 Source: docs/reviews/2026-08-28-review-artifact-contracts-code-review-r6.md, round r6, findings F4 + F12 (validated as real defects; deliberately deferred)
 
 ## Problem
 
-1. **F4 (`security#publish-retry-stale-snapshot`, Medium)**: in `scripts/summarize_review_stats.py` the strict audit builds report bytes from the originally read buffers, then calls the publish-with-recheck helper; on a detected concurrent change the retry re-reads the buffers in place, the next recheck passes, and the publish writes a report computed from the old bytes, stale relative to what the freshness gate just verified (~line 1931). Code-traced; the race window (sidecar write between initial read and publish) has never been demonstrated live.
+1. **F4 (`security#publish-retry-stale-snapshot`, Medium)**: fixed 2026-09-01 by docs/plans/2026-09-01-summarizer-publish-lock-hardening.md (the publish-with-recheck path no longer emits a report computed from the originally read, pre-race buffers). F12 below remains open.
 2. **F12 (`simplification#cli-source-flag-triplication`, Low)**: the three source-digest CLI flags in `scripts/validate_review_staging.py` triple one wiring and one test shape (argparse entries, empty-value loop, mutual-exclusivity list, if/elif routing); the three selftest families repeat the same five cases over ~200 duplicated lines, with drift already visible (empty-value case only in the plan family, mutual-exclusivity only in the document family) (~line 4045).
 
 ## Location
@@ -16,7 +17,7 @@ Source: docs/reviews/2026-08-28-review-artifact-contracts-code-review-r6.md, rou
 
 ## Suggested fix
 
-F4: drop the buffer re-read and fail immediately on the first detected change (raise the race error; the caller never re-parses), or pass a rebuild callable that re-runs parse/classification/serialization from fresh buffers; add a selftest mutating the input once after the first recheck. F12: keep the three flags but drive routing and empty checks from one flag-to-kind table, and factor the five-case selftest into one parameterized family run over each kind.
+F12: keep the three flags but drive routing and empty checks from one flag-to-kind table, and factor the five-case selftest into one parameterized family run over each kind.
 
 ## Severity
 
