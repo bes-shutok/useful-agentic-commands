@@ -1,6 +1,6 @@
 # Backlog: plan-readiness-migration plan authoring r5 residuals
 
-Status: open (NOT covered by the prose-residue sweep; its Assumptions scope these two items out — fold at the plan doc's next legitimate touch)
+Status: done
 Workflow: backlog
 Source: docs/plans/2026-09-05-plan-readiness-migration.md plan review r5 (two Low, non-blocking findings; deferred at the 5-round cap per the two-regenerating-classes rule, prose class)
 Severity: Low

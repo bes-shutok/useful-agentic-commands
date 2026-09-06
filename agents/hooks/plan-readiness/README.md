@@ -97,8 +97,8 @@ every round's `## Summary`, so post-adoption artifacts never depend on legacy
 shapes. Consumer precedence is sidecar verdict field > Summary total rule (per-line, last occurrence wins): when the latest round's sidecar carries a `verdict` field (`yes`/`no`,
 written by `review-plan` since the 2026-09-05 plan-readiness-migration plan),
 it decides; artifacts whose sidecar lacks the field fall back to that rule. Deleting the legacy Summary grammar is TIME-GATED: eligible only
-once `--sweep` coverage reports covered equal to total over the live
-plan-review corpus; tracked in
+once `--sweep` coverage reports a positive total with covered equal to total
+over the live plan-review corpus; tracked in
 `docs/history/backlog/2026-09-05-plan-readiness-legacy-verdict-grammar-deletion.md`.
 
 Legacy review artifacts that predate the `## Summary` convention can never

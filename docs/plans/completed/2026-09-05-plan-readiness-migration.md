@@ -172,12 +172,13 @@ Optional: `depth` (string), `domains` (list), `verdict` (string `yes` or `no`; t
 ```text
 The same verdict is recorded in the sidecar `verdict` field in the same pass; the readiness validator prefers the sidecar field and falls back to Summary parsing only for artifacts whose sidecar lacks it.
 ```
-- [x] `review-plan/SKILL.md` Integration Points validator paragraph (r4 F2 fold; r6 F1+F3 refold): in the paragraph's final sentence, replace the full span from `and the review Markdown reports `ready=yes` in its `## Summary` with zero unresolved blocking findings (`is_review_ready`)` (backticks included, through the closing paren) with exactly:
+- [x] `review-plan/SKILL.md` Integration Points validator paragraph (r4 F2 fold; r6 F1+F3 refold): in the paragraph's final sentence, replace the ENTIRE final sentence, which wraps `ready=yes` and `## Summary` in backticks, from `and the review Markdown reports` through the closing paren of `(`is_review_ready`)`, as a full-sentence replacement block with exactly:
 
 ```text
-the verdict is established from the sidecar `verdict` field first, with the Summary total rule over the review Markdown as the legacy fallback, and alongside zero unresolved blocking findings (`is_review_ready`)
+and reports zero unresolved blocking findings (`is_review_ready`); the verdict is established from the sidecar `verdict` field first, with the Summary total rule over the review Markdown as the legacy fallback.
 ```
 (r4 F4 fold: the shipped sentence keeps the blocking-findings clause earlier, joined by a semicolon with `and reports zero unresolved blocking findings`; the fence records the prescription, not the final bytes.)
+(r5 executed-shape note: the shipped sentence carries further wording from the later r7 F1 fold about Summary-only edits; the fence records the prescription, not the final bytes.)
 
 Then, in the SAME paragraph, replace the clause beginning `while a post-round edit of the review Markdown itself is caught` through the end of the paragraph with exactly (r7 F1 fold: replace the CLAUSE, never the whole sentence; the preceding `The sidecar digest covers the PLAN bytes only:` statement is load-bearing and must stay intact):
 
@@ -236,6 +237,7 @@ Files:
 ```text
 **Verdict-shape drift check (every round, before launching the review):** run `python3 scripts/plan_readiness.py --sweep`, resolving the script via the env-override, repo-local, then deployed-runtime fallback documented in `agents/hooks/plan-readiness/README.md`. A non-zero exit means the plan-review corpus carries verdict-parse anomalies; stop before launching this round's workers and resolve the listed anomalies first. The sweep's coverage line is informational: it tracks how much of the corpus still predates the sidecar verdict field.
 ```
+(r3 review-fix note: the shipped paragraph broadens the non-zero-exit meaning to name a missing or misconfigured reviews_dir and a sibling compatibility failure; the fence records the prescription, not the final bytes.)
 - [x] hook README, Verdict representation section: replace the tail that starts at the sentence with anchor text `Consumer precedence is` (currently reading the sidecar field as future and deferring to a backlog item) with exactly (r6 F7 fold: the backlog file linked below is created later in Task 7, so this commit transiently carries a dangling link; accepted):
 
 ```text
@@ -257,7 +259,7 @@ Wiring note: review-loop runs this sweep before every round (its verdict-shape d
 ```text
 The check lives ONLY in the plan_readiness launch path; validate_review_staging.py never imports plan_readiness.
 ```
-- [x] Run → expect GREEN: the Validation Commands doc-grep section passes; both selftests still pass (docs-only task). At this task point the tie-break fixture does not exist yet
+- [x] Run → expect GREEN: the Validation Commands doc-grep section passes; both selftests still pass (docs-only task). Restrict this interim run to the doc-grep lines and the forbidden-README check; the em-dash loop and the full Validation block run only at Task 8 (the em-dash loop is one line inside that block; its `test -f` pre-check fails on the Task 7 backlog file, which does not exist yet). At this task point the tie-break fixture does not exist yet
 - [x] Commit: `docs: review-loop pre-round sweep + hook README verdict precedence and compat handshake`
 
 ### Task 6: Same-N cross-date tie-break fixture (backlog: same-n-tie-break-fixture)

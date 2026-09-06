@@ -1,4 +1,4 @@
-Status: open
+Status: done
 Workflow: backlog
 Date: 2026-09-05
 Severity: Low

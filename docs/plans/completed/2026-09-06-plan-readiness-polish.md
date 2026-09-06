@@ -75,6 +75,9 @@ cd "$(git rev-parse --show-toplevel)" || exit 1
 python3 scripts/plan_readiness.py --selftest || { echo "FAIL: plan_readiness selftest"; exit 1; }
 PASS_COUNT="$(python3 scripts/plan_readiness.py --selftest | grep -c '^PASS')"
 test "$PASS_COUNT" -eq 90 || { echo "FAIL: expected 90 PASS lines, got $PASS_COUNT"; exit 1; }
+python3 scripts/plan_readiness.py --selftest | grep -qF 'PASS: selftest#legacy_or_unsupported_sidecar/bypass_closed_after_edit' || { echo "FAIL: sentinel check-name pin"; exit 1; }
+GOLD="$(python3 scripts/plan_readiness.py --selftest | grep '^PASS: selftest#' | LC_ALL=C sort | shasum -a 256 | cut -d' ' -f1)"
+test "$GOLD" = "d8e1292f83fd3592031cf7fcd72c4e296060608a28b8102570cbce06afc27cc2" || { echo "FAIL: selftest check-name golden hash drift: $GOLD"; exit 1; }
 # Docs obligations: one dedicated flatten-grep per obligation (newline-tolerant).
 doc_has() { tr '\n' ' ' < "$2" | grep -qF "$1" || { echo "FAIL: missing in $2: $1"; exit 1; }; }
 doc_has 'coverage reports a positive total with covered equal to total' agents/hooks/plan-readiness/README.md
@@ -102,56 +105,56 @@ bash scripts/scan-public-hygiene.sh || { echo "FAIL: hygiene scan"; exit 1; }
 Files:
 - `agents/hooks/plan-readiness/README.md`
 
-- [ ] In the Verdict representation section, in the sentence with anchor text `Deleting the legacy Summary grammar is TIME-GATED`, replace the span from `eligible only` through `plan-review corpus` (currently reading `eligible only once `--sweep` coverage reports covered equal to total over the live plan-review corpus`, line-wrapped across three lines) with exactly (the line wrap in the file may differ; the sentence text is what is pinned):
+- [x] In the Verdict representation section, in the sentence with anchor text `Deleting the legacy Summary grammar is TIME-GATED`, replace the span from `eligible only` through `plan-review corpus` (currently reading `eligible only once `--sweep` coverage reports covered equal to total over the live plan-review corpus`, line-wrapped across three lines) with exactly (the line wrap in the file may differ; the sentence text is what is pinned):
 
 ```text
 eligible only once `--sweep` coverage reports a positive total with covered equal to total over the live plan-review corpus
 ```
 
-- [ ] Run → expect GREEN: `tr '\n' ' ' < agents/hooks/plan-readiness/README.md | grep -qF 'coverage reports a positive total with covered equal to total'` succeeds, and the stale-wording forbidden sweep from the Validation Commands block prints nothing (it is RED on today's pre-fix tree, verified at authoring)
-- [ ] Commit: `docs: hook README eligibility gate requires a positive sweep total`
+- [x] Run → expect GREEN: `tr '\n' ' ' < agents/hooks/plan-readiness/README.md | grep -qF 'coverage reports a positive total with covered equal to total'` succeeds, and the stale-wording forbidden sweep from the Validation Commands block prints nothing (it is RED on today's pre-fix tree, verified at authoring)
+- [x] Commit: `docs: hook README eligibility gate requires a positive sweep total`
 
 ### Task 2: Archived migration plan doc folds (backlog: migration-r5-residuals, task5-fence-annotation)
 
 Files:
 - `docs/plans/completed/2026-09-05-plan-readiness-migration.md`
 
-- [ ] Fold (task5-fence-annotation): immediately after the closing fence of the Task 5 review-loop paragraph ```text block (the fence whose body starts `**Verdict-shape drift check (every round, before launching the review):**`), insert this annotation line as its own paragraph, matching the doc's existing fence-annotation convention:
+- [x] Fold (task5-fence-annotation): immediately after the closing fence of the Task 5 review-loop paragraph ```text block (the fence whose body starts `**Verdict-shape drift check (every round, before launching the review):**`), insert this annotation line as its own paragraph, matching the doc's existing fence-annotation convention:
 
 ```text
 (r3 review-fix note: the shipped paragraph broadens the non-zero-exit meaning to name a missing or misconfigured reviews_dir and a sibling compatibility failure; the fence records the prescription, not the final bytes.)
 ```
 
-- [ ] Fold (r5 residual, interim-gate scope): in the Task 5 checklist item beginning `- [x] Run → expect GREEN: the Validation Commands doc-grep section passes`, append this sentence before the existing trailing sentence about the tie-break fixture: `Restrict this interim run to the doc-grep lines and the forbidden-README check; the em-dash loop and the full Validation block run only at Task 8 (the em-dash loop's test -f pre-check fails on the Task 7 backlog file, which does not exist at this task point).`
-- [ ] Fold (r5 residual, anchor accuracy): in the Task 2 checklist item beginning `- [x] `review-plan/SKILL.md` Integration Points validator paragraph`, replace the span-description text `replace the full span from `and the review Markdown reports `ready=yes` in its `## Summary` with zero unresolved blocking findings (`is_review_ready`)` (backticks included, through the closing paren) with exactly:` with exactly `replace the ENTIRE final sentence, which wraps `ready=yes` and `## Summary` in backticks, from `and the review Markdown reports` through the closing paren of `(`is_review_ready`)`, as a full-sentence replacement block with exactly:` so the anchor is backtick-accurate and the replacement is stated as a full sentence
-- [ ] Same item, replace the clause-fragment fence body `the verdict is established from the sidecar `verdict` field first, with the Summary total rule over the review Markdown as the legacy fallback, and alongside zero unresolved blocking findings (`is_review_ready`)` with the full-sentence fence body:
+- [x] Fold (r5 residual, interim-gate scope): in the Task 5 checklist item beginning `- [x] Run → expect GREEN: the Validation Commands doc-grep section passes`, append this sentence before the existing trailing sentence about the tie-break fixture: `Restrict this interim run to the doc-grep lines and the forbidden-README check; the em-dash loop and the full Validation block run only at Task 8 (the em-dash loop is one line inside that block; its `test -f` pre-check fails on the Task 7 backlog file, which does not exist yet).`
+- [x] Fold (r5 residual, anchor accuracy): in the Task 2 checklist item beginning `- [x] `review-plan/SKILL.md` Integration Points validator paragraph`, replace the span-description text `replace the full span from `and the review Markdown reports `ready=yes` in its `## Summary` with zero unresolved blocking findings (`is_review_ready`)` (backticks included, through the closing paren) with exactly:` with exactly `replace the ENTIRE final sentence, which wraps `ready=yes` and `## Summary` in backticks, from `and the review Markdown reports` through the closing paren of `(`is_review_ready`)`, as a full-sentence replacement block with exactly:` so the anchor is backtick-accurate and the replacement is stated as a full sentence
+- [x] Same item, replace the clause-fragment fence body `the verdict is established from the sidecar `verdict` field first, with the Summary total rule over the review Markdown as the legacy fallback, and alongside zero unresolved blocking findings (`is_review_ready`)` with the full-sentence fence body:
 
 ```text
 and reports zero unresolved blocking findings (`is_review_ready`); the verdict is established from the sidecar `verdict` field first, with the Summary total rule over the review Markdown as the legacy fallback.
 ```
 
-Then append this divergence note line directly below the new fence:
+Then append this divergence note line below the fence's existing annotations, keeping chronological fold order (after the pre-existing r4 F4 fold line):
 
 ```text
-(executed-shape note: the shipped sentence carries further wording from the later r7 F1 fold about Summary-only edits; the fence records the prescription, not the final bytes.)
+(r5 executed-shape note: the shipped sentence carries further wording from the later r7 F1 fold about Summary-only edits; the fence records the prescription, not the final bytes.)
 ```
 
-- [ ] Run → expect GREEN: all four migration-doc doc_has pins from the Validation Commands block succeed against the edited file; this task's folds produce all four
-- [ ] Commit: `docs: fold r5 residuals + task5 fence annotation into archived migration plan`
+- [x] Run → expect GREEN: all four migration-doc doc_has pins from the Validation Commands block succeed against the edited file; this task's folds produce all four
+- [x] Commit: `docs: fold r5 residuals + task5 fence annotation into archived migration plan`
 
 ### Task 3: run_selftest fixture-runner extraction (backlog: selftest-fixture-runner-extraction)
 
 Files:
 - `scripts/plan_readiness.py`
 
-- [ ] Run → expect GREEN (characterization baseline, before the refactor): `python3 scripts/plan_readiness.py --selftest` prints 90 `PASS:` lines ending `ALL PASS` (verified at authoring on the pre-refactor tree)
-- [ ] Extract the fixture lifecycle into module-level private helpers in `scripts/plan_readiness.py`, keeping every existing check name string (`selftest#...`) and the PASS/FAIL output format byte-identical: (a) one reviews-dir context helper (for example a `_selftest_reviews_dir` contextmanager or a `_clean_reviews_dir(reviews_dir)` function called by a context helper) that owns the reviews-dir cleanup, replacing the 34 hand-rolled `for path in reviews_dir.iterdir(): path.unlink()` loops (the final Validation Commands block allows at most one remaining occurrence; the shared helper's own implementation may be that one); (b) per-family fixture functions named `_selftest_<family>` at MODULE level (not nested inside `run_selftest`, so `run_selftest` shrinks to a dispatcher over the families), each receiving the shared `plans_dir`/`reviews_dir` paths and the `check` callback it needs; `write_clean_state`, `_review_markdown`, and `_clear_sidecar` keep their signatures and semantics and move to module level only if the family functions need them (otherwise they stay in place)
-- [ ] Run → expect GREEN: `python3 scripts/plan_readiness.py --selftest` still prints exactly 90 `PASS:` lines ending `ALL PASS`; `grep -c 'for path in reviews_dir.iterdir' scripts/plan_readiness.py` reports at most 1
-- [ ] Commit: `refactor: extract fixture runner helpers from plan_readiness run_selftest`
+- [x] Run → expect GREEN (characterization baseline, before the refactor): `python3 scripts/plan_readiness.py --selftest` prints 90 `PASS:` lines ending `ALL PASS` (verified at authoring on the pre-refactor tree)
+- [x] Extract the fixture lifecycle into module-level private helpers in `scripts/plan_readiness.py`, keeping every existing check name string (`selftest#...`) and the PASS/FAIL output format byte-identical: (a) one reviews-dir context helper (for example a `_selftest_reviews_dir` contextmanager or a `_clean_reviews_dir(reviews_dir)` function called by a context helper) that owns the reviews-dir cleanup, replacing the 34 hand-rolled `for path in reviews_dir.iterdir(): path.unlink()` loops (the final Validation Commands block allows at most one remaining occurrence; the shared helper's own implementation may be that one); (b) per-family fixture functions named `_selftest_<family>` at MODULE level (not nested inside `run_selftest`, so `run_selftest` shrinks to a dispatcher over the families), each receiving the shared `plans_dir`/`reviews_dir` paths and the `check` callback it needs; `write_clean_state`, `_review_markdown`, and `_clear_sidecar` keep their signatures and semantics and move to module level only if the family functions need them (otherwise they stay in place)
+- [x] Run → expect GREEN: `python3 scripts/plan_readiness.py --selftest` still prints exactly 90 `PASS:` lines ending `ALL PASS`; `grep -c 'for path in reviews_dir.iterdir' scripts/plan_readiness.py` reports at most 1
+- [x] Commit: `refactor: extract fixture runner helpers from plan_readiness run_selftest`
 
 ### Task 4: Final validation
 
 Files: none (checks only)
 
-- [ ] Run the full `## Validation Commands` block from the repo root; every check exits 0 (selftest with 90 PASS pins, doc_has pins over the hook README and the archived migration plan doc, the two forbidden-pattern sweeps, hygiene scan)
-- [ ] If any check fails: fix and re-run the whole block; only then report the task complete (no commit line unless a fix was needed; a fix commit reuses the owning task's commit prefix)
+- [x] Run the full `## Validation Commands` block from the repo root; every check exits 0 (selftest with 90 PASS pins, doc_has pins over the hook README and the archived migration plan doc, the two forbidden-pattern sweeps, hygiene scan)
+- [x] If any check fails: fix and re-run the whole block; only then report the task complete (no commit line unless a fix was needed; a fix commit reuses the owning task's commit prefix)
