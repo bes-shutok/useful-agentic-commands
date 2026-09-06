@@ -1,6 +1,6 @@
 # Backlog: docs-branch: register cleanup trap before the restore region to close the interrupt-window leak
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-04-2026-09-03-docs-branch-temp-file-hygiene-code-review-r1.md, round r1, finding F5 (Low, security#temp-file-cleanup-window-before-trap-registration)
 

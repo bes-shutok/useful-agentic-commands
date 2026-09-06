@@ -181,6 +181,29 @@ docs_branch_is_explicit_delete() {
   return 1
 }
 
+# EXECUTE_PLAN_BACKUP, the worktree mktemp -d dirs, FILTERED_GITIGNORE, and
+# EXTRA_IGNORE_RULES are created below this line and are trap-owned; the trap
+# covers every mktemp artifact of this script. It registers BEFORE the restore
+# region so the region's three mktemp files are trap-covered from creation: a
+# SIGINT/SIGTERM or mid-region abort can no longer leak them.
+docs_branch_cleanup() {
+  rc=$?
+  trap - EXIT INT TERM
+  if [ -n "${DOCS_WORKTREE:-}" ]; then
+    git worktree remove -f "$DOCS_WORKTREE" 2>/dev/null || rm -rf "$DOCS_WORKTREE"
+  fi
+  [ -n "${DOCS_WORKTREE_PARENT:-}" ] && rm -rf "$DOCS_WORKTREE_PARENT"
+  [ -n "${SHADOW_TMP:-}" ] && rm -rf "$SHADOW_TMP"
+  [ -n "${EXECUTE_PLAN_BACKUP:-}" ] && rm -rf "$EXECUTE_PLAN_BACKUP"
+  [ -n "${DOCS_STAGED_DELETES_FILE:-}" ] && rm -f "$DOCS_STAGED_DELETES_FILE"
+  [ -n "${RESTORED_PATHS_FILE:-}" ] && rm -f "$RESTORED_PATHS_FILE"
+  [ -n "${DOCS_TMP_SWEEP_FILE:-}" ] && rm -f "$DOCS_TMP_SWEEP_FILE"
+  [ -n "${FILTERED_GITIGNORE:-}" ] && rm -f "$FILTERED_GITIGNORE"
+  [ -n "${EXTRA_IGNORE_RULES:-}" ] && rm -f "$EXTRA_IGNORE_RULES"
+  exit "$rc"
+}
+trap docs_branch_cleanup EXIT INT TERM
+
 # Add-only safety net: restore shadow files that exist on the docs branch but are
 # missing on disk BEFORE sync. Without this, a file lost earlier (e.g. by a manual
 # branch switch) would stay gone and never be re-synced. Reviews and all other
@@ -250,26 +273,6 @@ fi
 # and RESTORED_PATHS_FILE are consumed and rm'd in the restore block above, while
 # DOCS_TMP_SWEEP_FILE is filled there but consumed later (worktree sweep drop and
 # staged deletion), so only it survives to trap removal; cleanup covers the SHADOW_PATHS-empty early exit.
-# EXECUTE_PLAN_BACKUP, the worktree mktemp -d dirs, FILTERED_GITIGNORE, and
-# EXTRA_IGNORE_RULES are created below this line and are trap-owned; the trap
-# covers every mktemp artifact of this script.
-docs_branch_cleanup() {
-  rc=$?
-  trap - EXIT INT TERM
-  if [ -n "${DOCS_WORKTREE:-}" ]; then
-    git worktree remove -f "$DOCS_WORKTREE" 2>/dev/null || rm -rf "$DOCS_WORKTREE"
-  fi
-  [ -n "${DOCS_WORKTREE_PARENT:-}" ] && rm -rf "$DOCS_WORKTREE_PARENT"
-  [ -n "${SHADOW_TMP:-}" ] && rm -rf "$SHADOW_TMP"
-  [ -n "${EXECUTE_PLAN_BACKUP:-}" ] && rm -rf "$EXECUTE_PLAN_BACKUP"
-  [ -n "${DOCS_STAGED_DELETES_FILE:-}" ] && rm -f "$DOCS_STAGED_DELETES_FILE"
-  [ -n "${RESTORED_PATHS_FILE:-}" ] && rm -f "$RESTORED_PATHS_FILE"
-  [ -n "${DOCS_TMP_SWEEP_FILE:-}" ] && rm -f "$DOCS_TMP_SWEEP_FILE"
-  [ -n "${FILTERED_GITIGNORE:-}" ] && rm -f "$FILTERED_GITIGNORE"
-  [ -n "${EXTRA_IGNORE_RULES:-}" ] && rm -f "$EXTRA_IGNORE_RULES"
-  exit "$rc"
-}
-trap docs_branch_cleanup EXIT INT TERM
 
 SHADOW_PATHS=()
 for candidate in "${SHADOW_CANDIDATES[@]}"; do
