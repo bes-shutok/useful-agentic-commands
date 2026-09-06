@@ -5617,3 +5617,27 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** a review round prescribed a sed literal whose bracket classes were missing their closing `]`; `bash -n` accepted it as valid quoting, but BSD sed reported unbalanced brackets, and the snippet's `2>/dev/null` fallback would have silently emptied the parsed value. The implementing agent's scratch smoke test with stderr visible caught it before commit.
 
 **See also:** #268 (`bash -n` and stubbed dry-runs before shipping a script), #287 (positive-control validation greps in the execution shell).
+
+## 299. A resolved-path containment guard must reject the containment root itself, and re-check at use time
+
+**Principle:** Family G (guard fail-closed) - resolved-path facet: textual validation of a configured path is not validation; after `resolve()`, the value can land outside the container OR on the container root, and both degenerate the guard.
+
+**Trigger:** a guard resolves a configured directory (facts key, env var) and keys its behavior on that path being inside some root, where symlinks can retarget the configured value.
+
+**Rule:** (1) Guard two resolved degenerate outcomes, not one: outside the container, and equal to the container root; root-equality silently makes every computed relpath `.`-relative, inverting or disabling the rule. (2) Resolution and use are separate moments: re-validate the computed relpath at the use site, dropping `.` or `..`-prefixed results with a warning. (3) Pin each arm with its own fixture: symlink to the root, symlink to outside, plus an inside control.
+
+**Why:** a review found that a symlink targeting the repo root made a location gate treat the whole repo as the configured home, silently disabling the containment rule; the outside arm was guarded but the root-equal arm was not, and the new guard itself shipped unpinned until a later round added the fixture.
+
+**See also:** #283 (degenerate textual config values, warn and fall back), #133 (pin every sibling arm with its own discriminating test), #282 (probe the failure mechanism).
+
+## 300. A path-escape guard must test the first path segment, never a raw string prefix
+
+**Principle:** Family G (guard fail-closed) - precision facet: a lexical escape check written as a raw string-prefix test (`startswith("..")`) is both over-broad and under-specified; escape is a property of path segments, not of characters.
+
+**Trigger:** any guard that decides whether a relative path stays inside its root by string-matching the leading characters of the path text.
+
+**Rule:** (1) Test the first segment, not the prefix: reject when the segment equals `..` or starts with `..` plus the separator (portably, `os.sep`), and treat `.` by its own rule. (2) Fan the fix to every sibling site that copied the idiom; raw-prefix checks cluster. (3) Pin the over-match arm with a fixture whose name legitimately begins with `..` (for example a hidden directory), asserting the guard accepts it while a true `../` escape still fails.
+
+**Why:** a review found that a location gate's three `startswith("..")` tests falsely rejected directories legitimately named like `..hidden`, rejecting valid configuration because the check matched characters instead of segments; the corrected segment test needed a dedicated over-match fixture to keep the true-escape arm honest.
+
+**See also:** #299 (resolved-path containment guards and degenerate roots), #283 (degenerate textual config values), #133 (pin every sibling arm with its own discriminating test).

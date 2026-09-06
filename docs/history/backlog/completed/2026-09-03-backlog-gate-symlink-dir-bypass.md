@@ -1,6 +1,6 @@
 # Backlog inbox gate: symlinked hot-dir subdirectory bypass (rule 1)
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-03-backlog-inbox-location-gate-code-review-r1.md, round r1, finding F7, risk worker
 

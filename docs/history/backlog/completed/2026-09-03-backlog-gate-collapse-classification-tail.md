@@ -1,6 +1,6 @@
 # Backlog inbox gate: collapse duplicated classification tail in scan_repo
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-03-backlog-inbox-location-gate-code-review-r3.md, round r3, finding F10, design-simplicity worker
 Plan context: docs/plans/2026-09-03-backlog-inbox-location-gate.md (branch 2026-09-03-backlog-inbox-location-gate)

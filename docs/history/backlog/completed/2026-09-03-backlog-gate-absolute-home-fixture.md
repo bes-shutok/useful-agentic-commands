@@ -1,6 +1,7 @@
 # Backlog: selftest fixture for absolute/~ backlog-home anchoring
 
 - Date: 2026-09-03
+- Status: done
 - Origin: execute-plan Phase 3 r5 review (2026-09-03-backlog-inbox-location-gate), testing lens, deferred at the 5-round cap
 - Plan: docs/plans/2026-09-03-backlog-inbox-location-gate.md (archived to docs/plans/completed/)
 
