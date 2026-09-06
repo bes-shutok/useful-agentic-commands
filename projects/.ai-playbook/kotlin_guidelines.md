@@ -204,3 +204,7 @@ payload), add a test that passes a malformed/unparseable input and asserts:
 ## 21. Hoist Batch-Invariant Checks Outside Loops
 
 See `coding_guidelines.md #10`.
+
+## 22. Prefer imports over fully qualified type names
+
+See `jvm_guidelines.md` #12 (Java and Kotlin).

@@ -299,6 +299,8 @@ When finalizing work for code review or commit, the staged diff (`git diff maste
 
 **Why**: Code reviews evaluate staged changes. If staged code differs from working directory, review findings may be obsolete or the review may miss issues that exist only in untracked files.
 
+**Rename sub-shape (witness 2026-09-05):** `git mv` of a file carrying uncommitted in-place edits can stage the rename at the pre-edit content: the commit stat shows a bare 100%-similarity rename while the edits remain unstaged as modified files. After moving just-edited files, require the commit's `--stat` to carry the content delta (nonzero insertions, similarity below 100%) before finishing; a bare-rename commit for a file you edited means the content was dropped from staging (re-stage and amend).
+
 **See also (principle cluster H):** #88, #93, #94, #95 (same family, distinct angle: the git/docs-state verification cluster.).
 
 
@@ -3755,7 +3757,7 @@ The final design (two-tier source-level resolver: registry tier 1, row-evidence 
 
 **Example (2026-07-27 playbook-lessons migration, r3 F1 address):** Round r3 flagged ~57 lessons with domain framing; a pre-triage guessed ~12 "likely MOVE" by identifier load. On reading each Rule, only ONE was a true MOVE (its Rule was entirely source-domain mechanics, reducing to a generic "verify against source" already covered by a sibling). The other ~56 had portable Rules (output-label hygiene, test-discriminator discipline, archived-source authority, classifier-reachability checks) with domain framing only in Examples. Those were KEEP-AND-REWRITE: each Example/Anti-pattern paragraph was rewritten to a non-domain analog (function/test names, sheet/column names, region/category mechanics swapped for generic equivalents), Rule and Principle intact. Without the Rule-portability discriminator, the token-density heuristic would have wrongly relocated ~55 portable engineering lessons out of the cross-project corpus. See the r3 address log Phases A and C.
 
-**See also:** #166 (the detection layer this fixes decisions for), coding_guidelines.md #25 (Family H parent), coding_guidelines.md #18 (Family A: the Rule's portability is the equivalence-class property, the Example's tokens are an incidental member), `learn` SKILL Step 1.2 item 4 (the three-way fork: abstract precept vs cross-project lesson vs project-specific; the MOVE vs KEEP-AND-REWRITE decision is the concrete application of fork 2 vs fork 3 to a lesson already in the corpus).
+**See also:** #166 (the detection layer this fixes decisions for), coding_guidelines.md #25 (Family H parent), coding_guidelines.md #18 (Family A: the Rule's portability is the equivalence-class property, the Example's tokens are an incidental member), `learn` SKILL Step 1.2 item 4 (the four-way fork; MOVE vs KEEP-AND-REWRITE maps project-specific vs cross-project UL as fork 4 vs fork 3; stack-portable precepts are fork 2, not a full project `#N`).
 
 ## 178. A Loaded Skill's Hard Gates Are the Skill, Not the Format Section
 
@@ -4987,7 +4989,7 @@ When the identical command behaves differently in the agent shell versus the use
 
 **Why:** a 7-item questions-for-the-dealer email asked the seller to explain products whose terms are legally published elsewhere; the provider's tariff page answered most items in one pass (product identity, coverage set, contract duration), and the user pushed back: "too many questions, look some up online."
 
-**Example:** a purchase-financing proposal listed several unexplained monthly add-ons in its insurance column; the lender's official tariff-page IPIDs identified each one (a deductible-refund policy that dies with the credit, a replacement-car days schedule, the all-risks coverage list), trimming the email to 4 counterparty-only questions before sending. Same deal, second pass: a drafted follow-up still asked whether two small premiums were inside the quoted installment; the user rejected it because the proposal's own side-by-side columns already itemized them - classify against documents already in hand, not only public ones.
+**Example:** a purchase-financing proposal listed several unexplained monthly add-ons in its insurance column; the lender's official tariff-page IPIDs identified each one (a deductible-refund policy that dies with the credit, a replacement-car days schedule, the all-risks coverage list), trimming the email to 4 counterparty-only questions before sending. Same deal, second pass: a drafted follow-up still asked whether two small premiums were inside the quoted installment; the user rejected it because the proposal's own side-by-side columns already itemized them - classify against documents already in hand, not only public ones. Third pass: the follow-up asked the lender to reprice a variant the proposal's left column already printed, to confirm pickup when home delivery was already agreed and recorded in the pack, and whether the policyholder must match the credit holder when the user had already said the policy goes in his name - documents AND the user's own stated decisions are both in-hand sources.
 
 **See also:** #56 (verify claims against source before acting), #134 (probe quota resets before treating a limit as a hard block).
 
@@ -5094,3 +5096,524 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** a scheduling plan captured the machine's UTC+1 offset during a chat, then baked local-clock arithmetic into examples; the user corrected that the offset is not fixed (DST and travel change it), and the fix was to render via the system zone read at cycle time, keeping only the server-side +08 decode as a named constant.
 
 **See also:** #72 (verify plan-time claims before writing tasks), #246 (probe claims, not absence-greps).
+
+## 256. Output-language constraints bind every line, especially the low-attention ones
+
+**Principle:** Family H (verify the real thing, not the abstraction) - "the reply is in the required language" is verified by scanning the actual text, not by intention; the lines that leak are the auto-generated ones, not the composed ones.
+
+**Shape trigger:** the user or quoted sources write in a second language while a specific output language is demanded, or short transitional slots (openers, status lines, section labels, email subject fields) are being produced at speed.
+
+**Rule:** (1) Treat a language requirement as binding on every character of the reply, including one-word openers, status notes, and labels; quoted foreign text is the only exception and must be visibly labeled with a translation. (2) Before sending, run a mechanical check for the forbidden script over the whole reply (for example a grep for Cyrillic codepoints), the same way format gates scan long dashes. (3) When the constraint recurs across sessions, encode it in the always-loaded instruction files rather than relying on session recall.
+
+**Why:** the user demanded English-only replies three times in one day; each slip was a one-line opener or a section label written in Russian while every email body and document stayed clean, because short transitional lines mirror the dominant language of the surrounding context instead of the required output language, and an apology without a mechanical check let it recur.
+
+**Example:** a working session conducted in English with Russian agent chats pasted in produced Russian openers and status lines plus a foreign-language label inside an otherwise bilingual email draft; a codepoint scan over the final artifacts plus a rules section in the repo instruction files closed the gap.
+
+## 257. Run a format gate over every copy and sibling of a text, not only the deliverable
+
+**Principle:** Family D (consistency / no drift) - when one prose exists as several files (source, export, earlier revisions kept in the folder), they are one contract; a gate run on the delivered copy proves nothing about the rest.
+
+**Shape trigger:** the same text lives in two or more files (a markdown draft plus a plain-text paste export, or prior revisions still on disk) and a mechanical format check (long dashes, encoding, forbidden words) is about to run.
+
+**Rule:** (1) Keep ONE canonical source and derive every export mechanically (single transform or script); do not hand-edit two copies of the same prose. (2) Run each format gate over the whole file family: the source, every export, and sibling files still carrying the same or superseded text. (3) Fix violations in the canonical source and re-derive, so the fix does not itself create drift. (4) Scan by Unicode codepoint, not by eye; report the per-file count.
+
+**Why:** a paste-ready export file was scanned, passed, and reported clean, while the markdown source it was derived from still held five long dashes and two earlier sibling drafts held one each; the user caught the remainder after the review had already claimed the scan was done.
+
+**Example:** drafting one email produced a markdown source, a plain-text export, and three superseded revision files; scanning only the export reported zero violations, and a later codepoint-level scan over the folder found them in every other file. The gate was re-run folder-wide and extended to scan for forbidden-script characters in the same pass.
+
+**See also:** #256 (language constraints bind every line).
+
+## 258. Place a test mutation hook where both trees execute it
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a behavior-change fixture's mutation hook only works if the pre-fix tree fails through it AND the post-fix tree still executes it; a hook placed on a call the fix relocates or drops past the first verification makes the fixture permanently RED.
+
+**Shape trigger:** authoring a RED fixture that needs a mid-flight mutation or observation injected through a function the plan's fix restructures (moves work into a closure, reorders calls, extracts a helper).
+
+**Rule:** (1) Before choosing the hook, trace BOTH trees: where does the target call run pre-fix, and where after the planned fix? (2) Inject at a point between the initial state read and the first verification that both trees execute (a function entry both trees call, not a call only the old tree makes early or only the new tree makes late). (3) Verify the hook timing by simulating the fix (a monkeypatch of the planned shape) before finalizing the fixture's expected outcomes.
+
+**Why:** a plan-review RED fixture wrapped the report builder; the planned fix moved report construction inside the publish closure, so post-fix the first builder call ran after the freshness gate had already passed and the fixture could never turn GREEN - caught as a blocking review finding two rounds after authoring.
+
+**See also:** #253 (derive the expected post-state by executing the rule), #246 (probe claims, not absence-greps).
+
+## 259. Tag every line of a comparison with its source: document, or only someone's word
+
+**Principle:** Family H (verify the real thing, not the abstraction) - in a comparison of competing offers, a coverage claim that exists only in the counterparty's conversation is not the same fact as one printed in the offer document, and a comparison table that mixes them silently overstates the weaker offer.
+
+**Shape trigger:** building an option comparison (quotes, plans, proposals) from a mix of documents and live conversation, especially when a seller volunteers "that option also includes X" without a document line to match.
+
+**Rule:** (1) When recording each comparison row, note its provenance: quote the document (file, page, line) or mark it as conversation-only. (2) Conversation-only claims get a written-confirmation flag and must not be treated as documented cover in the verdict. (3) If a claim has no document line, ask for it in writing before ranking on it; offers and policies differ, and the difference is exactly what a claim-time dispute exploits.
+
+**Why:** a comparison table recorded "replacement car: no" for two offers because the line was absent from their PDFs; the seller had in fact stated one option included it, and the user corrected the table. The rewritten record separated PDF-listed covers from stated-only ones and flagged the stated scope as unconfirmed, which kept the ranking honest without inflating the offer.
+
+**See also:** #247 (mine the provider's disclosure documents before querying the counterparty).
+
+## 260. Gate the agent's own reply channel for output-language rules, and re-arm via session restart
+
+**Principle:** Family A (mechanical invariants over prompt advice) cross Family H (verify the real thing). A rule about the agent's own reply language lives on the reply channel, so the gate must sit on that channel (a Stop hook), not in instruction files; and a hook registered mid-session does not arm the running session, which read its hook list at startup.
+
+**Shape trigger:** the user has corrected the same output-language violation more than once and asks for hooks; or a freshly registered hook "did not work" in the session that installed it.
+
+**Rule:** (1) Encode the language rule as a Stop-event hook that scans the outgoing reply for forbidden-script codepoints and returns a block decision with the offending fragment, capped continuations, and a stop-active guard against loops. (2) Scan by Unicode codepoint ranges, not by eye; test clean, dirty, transcript-derived, and loop-guard cases by hand before registering. (3) After registration, verify arming in the runner's log: zero hook entries in the current session means the session pre-dates the config; say so and treat the next session as the real gate. (4) Keep the instruction-file rule too: instructions shape the first attempt, the hook catches the retry.
+
+**Why:** a user forbade Russian in chat replies; after four slips across instruction rules and apologies, a Stop hook was installed - and the very next reply still opened with a Russian word because the running session had loaded its hook list before registration. The log confirmed zero hook entries; only a session restart arms the gate.
+
+**Example:** the gate's own regex initially matched every Latin letter because an astral range was written as `\\u1E03` + `0-...` (a `\\u` escape consumes exactly four hex digits); ASCII-to-astral ranges need the `\\U` escape. Hand-testing the clean case before registering caught it.
+
+**See also:** #256 (output-language constraints bind every line).
+
+## 261. Resolve an artifact's home from fresh facts keys, not a legacy path
+
+**Principle:** Family H (verify the real thing, not the abstraction) - the path keys in the repo's facts file are the source of truth for where lifecycle artifacts (plans, reviews, backlog items) live; an existing same-topic file found by grep is evidence of a legacy layout, not of the correct destination.
+
+**Shape trigger:** about to write a lifecycle artifact into a directory located by search rather than by a facts key, especially when the facts file predates a layout convention known to exist in sibling repos.
+
+**Rule:** (1) Before writing, read the repo facts file and resolve the destination key for that artifact class. (2) A missing required key is a bootstrap-stale trigger: re-run the bootstrap skill, then place at the resolved path; never fall back to a legacy path found on disk. (3) When the correction lands, migrate the legacy location's content to the standard layout in the same pass, so no open item is orphaned from the lifecycle tools.
+
+**Why:** a backlog item was placed in a legacy flat feature-notes file located by grep because the facts file lacked the backlog key; the user corrected it, the bootstrap re-run added the backlog and completed keys, and the whole legacy file migrated to per-item files so the lifecycle could see every open item.
+
+**See also:** #255 (read time-varying environment values at the moment of use).
+
+## 262. Cross-check a surprising judge verdict against ground truth before acting
+
+**Principle:** Family H (verify the real thing, not the abstraction) - an LLM judge's classification is a probabilistic read of its input, so a consequential automated action (park, resume, restart) that hinges on it must first be checked against a cheap deterministic signal.
+
+**Shape trigger:** an automation loop acts on a model's verdict over a noisy text stream, and a verdict contradicts an observed liveness or completion signal.
+
+**Rule:** (1) Before acting on a consequential verdict, cross-check it against deterministic evidence: liveness heartbeats, process exit codes, or anchored sentinel lines. (2) When a benign noise source can flood the judged input (repeated SDK or framework warnings), silence it at the source via its own switch in the launcher, not only in prompts. (3) When a false verdict is already parked, contain by stopping the scheduler before its next action, then fix and re-verify; a state reset alone re-runs the same misread on the same input.
+
+**Why:** a supervised run's judge twice classified a live agent as quota-blocked from a wall of benign cache-warning lines; fresh heartbeats proved liveness, the scheduler was unloaded minutes before the false auto-resume would have typed into the running tab, and the launcher now defaults the SDK's warning switch off.
+
+## 263. A bound's negative witness must overstep through the tolerance dimension alone
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a negative witness for a bounded tolerance guards the bound only if the bound is the ONLY way it fails.
+
+**Shape trigger:** writing a plan task or test that bounds a previously unbounded tolerance (whitespace runs, retry counts, size caps, timeouts), and drafting the negative case that should prove the bound holds.
+
+**Rule:** (1) Construct the witness from the canonical matching form, overstepping ONLY the bounded dimension: for a one-newline whitespace bound, a blank line inside an otherwise canonical sentence. (2) A witness that differs in other dimensions too (unrelated text inside the gap) passes under the correct bound AND under the unbounded regression, so it discriminates nothing. (3) Before finalizing, simulate the witness under the unbounded form once and record that it flips; a bound numeric like `\s{1,3}` is itself a claim to verify (it still matches two blank lines).
+
+**Why:** a plan's bounded-whitespace task prescribed `\s{1,3}` as "cannot bridge blank lines" and justified it with a gap witness containing unrelated text; a review round showed the bound matched two newlines and the witness passed under `\s+` as well, leaving the bound with no discriminating acceptance evidence.
+
+**See also:** #235 (RED fixtures need a gate-unique assertion phrase), #220 (vacuous sweeps need RED-today proof).
+
+
+## 264. Mechanically re-verify exact-text contracts after every revision
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a literal-string contract between two halves of an artifact drifts whenever either half is revised, and rereading is not verification.
+
+**Shape trigger:** maintaining an artifact whose acceptance gates are literal string probes (pinned greps) bound to prescribed exact text, across multiple revision cycles.
+
+**Rule:** (1) After EVERY revision that touches either side of a pin (the gate pattern or the prescribed text), run a mechanical audit: extract every pin, verify it occurs exactly once in the prescribed text, and run a shell syntax check over any embedded script. (2) Never fix one side alone; a pin fix and its text fix must land in the same edit. (3) Strip possessive apostrophes from pinned phrases - a literal apostrophe inside a single-quoted shell pattern is a syntax error.
+
+**Why:** across five revision rounds of one plan's validation gates, pin/text drift was the top blocking family (mismatched wording, a doubled phrase, a case difference, an orphaned span); a fold fixed a pin but left its paragraph unfixed and the certification round failed on it; a short audit script would have caught every instance at fold time.
+
+**See also:** #263 (a negative witness must overstep the tolerance dimension alone), #220 (vacuous sweeps need RED-today proof).
+
+## 265. Routing a skipped step through its gate needs the gate's launch-dependent items scoped
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a gate that ran for a skipped step is only sound if its items that presuppose the skipped work are scoped out.
+
+**Shape trigger:** amending a workflow so a previously skipped step's obligations still execute (route the skip path through the step's verification gate), where some gate items check artifacts only the skipped step produces.
+
+**Rule:** (1) Before routing a skip path through a gate, inventory every gate item and split them into launch-dependent (presuppose the skipped step's artifacts) versus skip-path obligations. (2) Scope the launch-dependent items in the same edit ("items 1-3 apply only when the step launched; on the skip path item N governs") - an unscoped item is unsatisfiable on the skip path and either stalls the loop or trains executors to waive gates. (3) Re-trace the skip path end-to-end: every obligation must have exactly one owner that runs.
+
+**Why:** a plan amendment routed a clean loop's skip path through the Step 3.3 verification gate and added a skip-path backlog item as gate item 5; the next review round found gate item 1 (address sub-agent returned a log) unsatisfiable on the skip path - the gate either stalled the most common path or was silently waived.
+
+**See also:** #264 (mechanically re-verify exact-text contracts after every revision).
+
+## 266. Presence pins do not guard Markdown structure; re-render after inserting prose near a table
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a Markdown table is a structural artifact whose parsing ends at the first blank line, so prose inserted "near a row" can silently terminate it; text-presence pins verify wording, never rendering.
+
+**Shape trigger:** an edit instruction places prose "near" or "after" a row of a Markdown table, and the change is validated by span-presence or exact-count probes rather than by structure.
+
+**Rule:** (1) When inserting prose into a table region, place it after the complete table (after the last row), never between rows; a blank line ends the table and orphan rows render as raw pipe text. (2) Treat "near X" placement instructions as satisfied by below-the-whole-table unless the instruction demands mid-table. (3) After any table-region edit, verify structure mechanically (e.g. the rows between the header and the last row are contiguous), not by span grep alone.
+
+**Why:** an implement worker honoring a plan clause "near the `max_full_panel_rounds` configuration row" inserted a paragraph between two table rows; blank lines broke the table and the following budget row rendered as an orphaned fragment. Three review lenses independently flagged it, while every validation probe (span presence, exactly-once counts, adjacency by line number) stayed green.
+
+**See also:** #264 (mechanically re-verify exact-text contracts after every revision), #143 (prefer exact-match micro-edits in fenced Markdown).
+
+## 267. Keep the authoritative work system explicit
+
+**Principle:** Family D (single source of truth) cross Family H (verify the real thing, not the abstraction)
+
+**Shape trigger:** A request names an incident system and a project tracker, and a secondary ticket appears useful for visibility or implementation tracking.
+
+**Rule:** Identify which system owns the action before creating work. Keep that system primary. If a secondary tracker is created, label it as convenience-only, link it to the primary action, and preserve ownership, due dates, and scope in the primary record. When a narrow implementation item becomes a broad investigation, convert it to a spike with source-specific implementation tasks as deliverables.
+
+**Why:** A follow-up request for an incident action was initially treated as a request to create a project-tracker task. The correction was to keep the incident action authoritative, use the tracker only as an optional convenience record, and reshape the dependent alerting ticket into a spike rather than pretending one implementation task covered every source.
+
+**Example:** The final tracking arrangement kept the incident follow-up as the source of truth, linked a clearly labelled convenience ticket, and changed the alerting work into a spike that must produce separate implementation tasks for each provider or message source.
+
+**See also:** `jira-workflow/SKILL.md`; `slack-message/SKILL.md`; #249 (map broadened findings to concrete actions).
+
+## 268. Apostrophes break a quoted heredoc captured by bash 3.2 command substitution
+
+**Principle:** Family H (verify the real thing, not the abstraction) - the abstraction "a quoted `<<'EOF'` heredoc body is literal text anywhere" hides that macOS's deployment target `/bin/bash` 3.2 misparses it when the capture sits inside `$( )`: an apostrophe in the body raises "unexpected EOF while looking for matching `'`", and the script dies at fire time, not at write time.
+
+**Shape trigger:** writing a shell script that captures multi-line text (a prompt, message body, template) into a variable via `VAR=$(cat <<'EOF' ...)` where the text may contain apostrophes, on macOS where `/bin/bash` is 3.2.
+
+**Rule:** (1) Capture prose from a plain file with `VAR="$(cat file)"`; data never passes through a shell parser. (2) Run `bash -n` over any generated script BEFORE scheduling or shipping it; the parse error is invisible until run time otherwise. (3) Dry-run with the payload command stubbed and a fake `$HOME`, asserting the text survives the round-trip.
+
+**Why:** a scheduled kickoff script embedded its prompt as a heredoc-in-substitution; `bash -n` rejected it on "plan's", so the failure would have surfaced only at the scheduled fire inside launchd; the stubbed dry-run then proved the file-based round-trip.
+
+**See also:** #129 (bash 3.2 empty-array expansion under `set -u`), #152 (the same idiom is not portable to zsh).
+
+## 269. One-shot launchd calendar jobs self-disable by sentinel, never by bootout
+
+**Principle:** Family H (verify the real thing, not the abstraction) - "StartCalendarInterval fires once because I schedule one date" is false: launchd re-fires it on every matching tick and keeps the job loaded even after the plist file is deleted, while `launchctl bootout` from inside the running script kills that script mid-run (verified live: the post-bootout line never executed).
+
+**Shape trigger:** scheduling a run-once job with launchd's StartCalendarInterval (or any repeating calendar scheduler) whose payload is long-lived and must not re-fire.
+
+**Rule:** (1) Guard the payload with a sentinel: the first run creates it; every later run checks it first and no-ops in one line. (2) Remove the plist file in the same first run so the next reboot unloads the job for good; never call `bootout` on your own label from inside the job, because it tears down the running instance. (3) Prove the lifecycle mechanically: dry-run with the payload stubbed, run the script twice, and assert first-run work then second-run no-op.
+
+**Why:** a one-shot 17:20 kickoff job needed both guards; simulating the lifecycle before loading the job surfaced the daily repeat and the self-kill instead of discovering them at fire time, where a double-fire would have run the payload twice.
+
+**See also:** #268 (`bash -n` and stubbed dry-runs before scheduling a script).
+
+## 270. Bind a review round's digest before folding; at the cap, defer instead of fold
+
+**Principle:** Family G (artifacts over memory) - a staged review round's sidecar `source_digest` is a claim about the exact bytes the workers reviewed; applying folds before writing the staging doc makes that claim unrecoverable (an uncommitted worktree has no intermediate state to hash), and folding non-blocking findings at a cap round invalidates the very digest the certification just bound.
+
+**Shape trigger:** running any staged review loop (staging markdown plus a `.stats.json` sidecar carrying `source_digest`) where the orchestrator both stages rounds and applies folds.
+
+**Rule:** (1) Write and digest-bind the round's staging artifact BEFORE applying any fold; the staging doc records what was reviewed, the fold changes what exists. (2) If folds land first anyway, never backfill silently: record an explicit orchestration-order note in the staging metadata and bind the sidecar to the current post-fold bytes, so the mechanical `--source-plan` gate passes honestly. (3) At the cap round, defer every non-blocking residual to a durable backlog item instead of folding: a clean round at the budget certifies the current digest, while any fold demands a fresh round the budget no longer allows.
+
+**Why:** in a five-round plan certification, the r2 folds landed before staging; the post-r1 digest was unrecoverable, and the round had to be staged with an orchestration note bound to the post-fold digest. The r5 clean round then deferred five non-blocking residuals to a backlog item precisely because folding them would have required an unauthorized sixth round.
+
+**See also:** #264 (mechanically re-verify exact-text contracts after every fold), #267 (keep the authoritative work system explicit).
+
+## 271. Acquire locks through the owning script only; a hand-made lock directory blocks every future acquisition
+
+**Principle:** Family H (verify the real thing, not the abstraction) - "a lock is a directory" hides that the lock script keys on the directory's EXISTENCE and reads its metadata files: a hand-made `mkdir` lock with no metadata is indistinguishable from a held lock, and removing only the inner run directory leaves the husk in place, so the next real acquisition times out reporting `held ... metadata missing`.
+
+**Shape trigger:** any session that improvises a lock (manual `mkdir`/token file) instead of invoking the owning lock script, or that releases by deleting files it can name rather than running the script's release command.
+
+**Rule:** (1) Always acquire and release concurrency locks through the owning script (`wait-acquire` / `release-repo` with its exported token); never synthesize the lock layout by hand. (2) If a hand-made husk exists, remove the ENTIRE lock directory (verify it is empty and was created by your own session before doing so), then acquire through the script. (3) When a script reports `held ... metadata missing`, suspect a foreign or husk directory first: inspect for metadata files before treating it as a live holder.
+
+**Why:** a done run that had already committed ad hoc released its improvised lock by `rm -rf` of the inner directory only; the next formal done run then timed out three polls on the empty husk before inspection showed zero metadata and a timestamp from the earlier same-session mkdir.
+
+**See also:** #267 (keep the authoritative work system explicit).
+
+## 272. A review finding's premise is a claim: probe the cited source before folding or dropping
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a review finding's factual premise, and any frozen-history note it cites, are both hearsay; folding the rationale verbatim propagates the error into the artifact, and dropping the finding on a reviewer's contrary assertion is the same trap inverted.
+
+**Shape trigger:** any review round where a finding's rationale rests on a factual claim about code (a base class, a flag, an error type) and the evidence offered is a citation, not a probe.
+
+**Rule:** (1) Before folding a finding's rationale into the artifact, run the cheapest direct probe of the disputed fact (read the actual class/function definition, run the one-liner); never resolve a frozen-note-vs-reviewer conflict on authority. (2) When dropping a finding as factually wrong, record the disproof (command plus observed output) in the next round's artifact so the drop is auditable instead of silent. (3) If the prescribed fix is correct under both premises, keep it and correct only the rationale text.
+
+**Why:** a plan-review round folded a finding whose rationale said a helper raises the builtin permissions error (an `OSError` subclass); the script actually defines its own plain-`Exception` error class with no `errno`, the frozen note it cited had misattributed the raiser, and a three-line MRO probe settled both sides - the fix survived, the rationale did not.
+
+**See also:** #246 (behavioral claims need a probe, not an absence-grep), #264 (re-verify exact-text contracts after every fold).
+
+## 273. Simulate count and negative structural gates against the post-task tree, frozen sites included
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a validation gate that counts occurrences or forbids a literal is a claim about the tree AFTER the task lands, not about today's tree; a count computed from today's file misses two silent falsifiers: legitimate sites in code the task freezes (they never disappear), and the prescribed new artifact itself (a helper's body or docstring carrying the very literal the sweep bans).
+
+**Shape trigger:** authoring any `-eq N` / `-le N` / forbidden-grep validation command over a file the plan only partially edits, especially when the swept literal also exists in regions declared out of scope.
+
+**Rule:** (1) Before finalizing a count or negative gate, enumerate every site of the swept literal in the CURRENT file and classify each: removed by the task, kept frozen, or introduced by the task's own prescribed code; the gate's expected value must equal the post-task sum, not today's minus what the task touches. (2) If the task's prescribed snippet must contain the literal (a helper returning the sliced prefix, a docstring quoting a regex), either exempt that one site explicitly in the gate (exact-count with a stated rationale) or prescribe a paraphrase ban on the literal in prose/docstrings. (3) Simulate both endpoints once at authoring time: run the gate against today's tree (it must fail) and against the imagined post-task tree (it must pass); a gate that fails in neither state discriminates nothing.
+
+**Why:** a plan's Validation Commands pinned "the Findings-prelude literal must have exactly ONE definition site" and a blanket forbidden-sweep on the prefix slice; the literal also lived in a frozen validator function (so the correct edit left TWO sites) and the prescribed helper itself had to contain the slice (so a correct implementation failed its own gate). The blocking defect surfaced only when a reviewer counted the real sites instead of trusting the plan's arithmetic.
+
+**See also:** #264 (mechanically re-verify exact-text contracts after every fold), #272 (a review finding's premise is a claim: probe the cited source).
+
+## 274. Gate a deliverable through a fixture-built state, never through its own live bytes
+
+**Principle:** Family H (Verify the real thing, not the abstraction) - the artifact-lifecycle facet: a validation command that points at the deliverable under review is unsatisfiable when later workflow steps legitimately mutate those bytes.
+
+**Shape trigger:** a plan's final validation checks the finished artifact by running the new gate against the artifact itself (live file, live repo state).
+
+**Rule:** When later workflow steps are SUPPOSED to change the checked bytes after the last review (checkbox marks, round-reference lines, header updates), an exit-0 gate on the live artifact can never pass a correct implementation. Validate the mechanism against a fixture-built state (temp tree with a synthetic clean artifact) instead; live-artifact checks are admissible only for properties invariant across the whole lifecycle (existence, syntax).
+
+**Why:** a plan's final task ran the new readiness validator against the plan's own file and required exit 0; the reviewer showed that execute-plan checkbox marks and review-reference lines mutate the digest after the final review round, so the gate failed a correct implementation by construction. The fixture-built accepted-state test already proved the same mechanism without the self-reference.
+
+**See also:** #273 (simulate count and negative gates against the post-task tree), #264 (re-verify exact-text contracts after every fold).
+
+## 275. Scheduling a task is not a license to execute it in-session
+
+**Principle:** Family E (scope fidelity: do exactly the asked operation) - when the user asks to SCHEDULE work for later, the deliverable is the scheduled automation itself; running the work immediately duplicates it and races the future run.
+
+**Shape trigger:** a request of the form "schedule at <time> the task: create/execute <artifact> ... accept all recommended options" - the pre-authorization clauses bind the FUTURE run, not the current chat.
+
+**Rule:** (1) Perform only the scheduling operation (create or update the automation) and confirm it; do not invoke the target skill or start the work in-session unless the user explicitly says to run it now. (2) Words like "go on" or "if needed" in the same message attach to the scheduling action, not to early execution; when a phrase could be read as "start now," re-read it against the primary verb of the sentence. (3) Write the automation prompt self-contained (it cannot see this chat), including a check for a duplicate artifact in case an interactive session did touch the work.
+
+**Why:** after scheduling a plan-authoring automation, the same chat also invoked the authoring skill and ran two review rounds; the user stopped it with "I asked you to reschedule the task, not to do it right now," leaving a half-certified plan whose digest no longer matched its certified review round.
+
+**See also:** #267 (keep the authoritative work system explicit).
+
+## 276. Updating a cron automation can leave it paused; delete and recreate instead
+
+**Principle:** Family H (verify the real thing, not the abstraction) - tool-update facet: after a scheduling-tool update call, re-read the record and act on the OBSERVED state (enabled flag, next fire time), not on the assumption that the update preserved the prior enabled state.
+
+**Shape trigger:** any reschedule of a one-shot scheduled task through an update API.
+
+**Rule:** After updating a scheduled automation, re-list it and verify `enabled`/`active` and the next-run timestamp. If the update left it paused and the tool exposes no enable action, delete and recreate it with the new schedule rather than shipping a silently paused automation.
+
+**Why:** an update call that changed only the cron expression returned the automation with `enabled: false` / `lifecycleStatus: paused` (next fire time updated but never to fire); the fix was to delete the record and create a fresh one-shot at the new time.
+
+**General form:** an update that silently degrades a record's liveness state is a tool bug the caller must detect by re-reading, not by trusting the success envelope.
+
+## 277. A rename commit is not done until the destination carries the content edits
+
+**Principle:** Family H (verify the real thing, not the abstraction) - rename facet: a move plus a content edit is TWO changes; verifying the rename (R100, source gone) says nothing about whether the edit landed in HEAD.
+
+**Shape trigger:** a commit that both relocates a tracked file and is supposed to change its body (status flip, disposition section, header update), especially when the edit and the `git mv` happen in different steps of a workflow.
+
+**Rule:** After committing such a change, diff the destination in HEAD against the working tree (`git diff HEAD -- <dest>` or `git show --stat HEAD -- <dest>`). If the committed entry is a pure rename (similarity 100) with an empty content diff at HEAD, the edits are still uncommitted: stage the destination by path and commit before claiming the change in the commit message or closing the task.
+
+**Why:** a wording-pass review found a commit whose message said "backlog closed" while the tree change only moved the backlog file under its completed location; the Status/closure edits sat uncommitted in the working tree, so the committed tree still showed the open state under the completed path.
+
+**See also:** #193 (a rename is incomplete until the source path is gone from HEAD - that checks the SOURCE side; this lesson checks the DESTINATION content side), #251 (pin rename detection when asserting staged deletions).
+
+## 278. A ready verdict binds bytes; digest drift re-opens certification
+
+**Principle:** Family H (verify the real thing, not the abstraction) - verdict-binding facet: a review verdict certifies an exact digest, so an artifact whose bytes moved after the verdict is uncertified no matter how small the drift; reporting it as finished (with drift as a caveat) hands an uncertified draft to the user.
+
+**Shape trigger:** about to report a reviewed artifact as done when any edit (fold, reformat, squash-merge, parallel-session touch) landed after the last round's digest was recorded.
+
+**Rule:** Before reporting a reviewed deliverable complete, recompute its digest and compare with the last verdict's binding. On mismatch, do exactly one of: run the (cheap) re-certification round now, or revert the bytes to the certified digest and note the dropped folds. Never ship drift-plus-caveat; the user cannot act on a verdict that does not cover the file they received.
+
+**Why:** a plan reached a clean verdict, then three Low folds plus a rewording pass and a squash-merge moved its digest; the session reported "certified, except drift" and moved on, and the user had to declare the plan a draft and order the re-certification explicitly.
+
+## 279. Compare paths in one resolution basis before membership checks
+
+**Principle:** Family H (verify the real thing, not the abstraction) - basis facet: a path-membership check silently never matches when one side is absolute (or symlink-resolved) and the other repo-relative; both operands must be normalized to the same resolution basis first.
+
+**Shape trigger:** any `is_relative_to` / parts-slicing / startswith comparison between a configured home path and a walked filesystem path, especially after one side passed through `Path.resolve()` and the other through tracked-file listing or relpath derivation.
+
+**Rule:** Before comparing two paths, make their bases explicit. Normalize both sides with the same transform (`os.path.relpath(p.resolve(), root)` on each, or `is_relative_to` between two absolutes). Add a regression fixture that matches under the intended semantics and would have failed under the shipped ones; a no-fixture exclusion branch is untested by construction.
+
+**Why:** a location-gate's home exclusion compared repo-relative parts against absolute resolved homes, so the exclusion branch never fired; a review round caught it because no fixture exercised the excluded shape.
+
+**See also:** #261 (resolve homes from fresh facts keys), #278 (verdicts bind bytes).
+
+## 280. Enumerate error classes before flipping a handler fail-closed
+
+**Principle:** Family G (guard fail-closed) - scoping facet: tightening a catch-all into fail-closed must enumerate which error classes are legitimate fallback inputs and stay fail-open, or the handler breaks its own documented fallback paths.
+
+**Shape trigger:** converting a warn-and-continue `except` into targeted fail-closed handling around a subprocess or filesystem walk that has documented non-error fallback modes (non-repo scan target, missing optional directory).
+
+**Rule:** When tightening, list the concrete error classes the operation raises and classify each: unexpected class fails closed (print, non-zero exit); documented-fallback class warns and continues. Pin the split with one selftest per class; a class with no fixture keeps the old behavior.
+
+**Why:** a blanket fail-closed subprocess handler in a location gate broke the legitimate no-git-repo scan target; only one selftest fixture happened to exercise that class, and the design had not recorded the exception anywhere.
+
+**See also:** #273 (simulate gates against the post-task tree), fail-closed grep guard lessons in cluster G.
+
+## 281. Pin hermetic git config on every selftest commit
+
+**Principle:** Family excluded (test hermeticity): a selftest that creates real git commits must neutralize host git configuration, or it tests the developer's environment instead of the code.
+
+**Shape trigger:** a selftest that runs `git init` plus `git commit` inside a temp directory on a machine that may have commit signing or global hooks configured.
+
+**Rule:** Every git invocation a selftest makes (commit, and any command hooks could intercept) passes `-c commit.gpgsign=false -c core.hooksPath=/dev/null -c core.excludesFile=/dev/null`, or the test environment exports the equivalents once. `-c` overrides do NOT cover config injected via the environment: strip `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_*` / `GIT_CONFIG_VALUE_*` (prefix strip), `GIT_OBJECT_DIRECTORY`, and `GIT_ALTERNATE_OBJECT_DIRECTORIES` from the subprocess env, and export `GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null` once for the whole block when fixture `git init`/`commit` must not inherit the host's user/system config files. A selftest failure that only reproduces on one host is this family until proven otherwise.
+
+**Why:** a location-gate selftest created fixture commits; on hosts with signing or global hooks the commit fails or triggers unrelated hooks, making the selftest pass/fail depend on the host. Same selftest, later review round: a host exporting `GIT_CONFIG_COUNT` config or an excludes file changed tracked-file enumeration inside the fixture repo; only env stripping plus the excludesFile pin made the scan surface hermetic.
+
+**See also:** #268 (host-specific shell quirks in one-shot commands).
+
+## 282. Probe the failure mechanism before pinning a fail-closed fixture
+
+**Principle:** Family G (guard fail-closed) - fixture facet: a selftest for a fail-closed branch is valid only if the chosen failure mechanism actually drives that branch; mechanisms must be probed empirically, not assumed.
+
+**Shape trigger:** writing a fixture that must make a subprocess error-handling path exit non-zero, when the intuitive trigger (a stale lock file, a busy resource) may not make the subprocess fail at all.
+
+**Rule:** Before committing to a fixture mechanism, reproduce it once against the real command and observe the exit code and stderr. Record the observed mechanism in a fixture comment. If the intuitive trigger does not fail, find the one that does. Example: a read-only git plumbing command (`ls-files`) never takes the index lock, so a stale `.git/index.lock` cannot drive its fail-closed branch; corrupting `.git/index` bytes does (exit 128, with backup and try/finally restore in the fixture).
+
+**Why:** a review round flagged the fail-closed branch as untested; the first fixture idea (stale lock) was verified to be a no-op, and only the empirical probe found a working mechanism.
+
+**See also:** #280 (enumerate error classes before flipping fail-closed), #281 (hermetic git config in selftests).
+
+## 283. Treat a present-but-empty config value as unset, loudly
+
+**Principle:** Family G (guard fail-closed) - config facet: an exclusion or safety behavior keyed off a config value must distinguish absent, present-but-blank, and set; blank must never silently widen the gate.
+
+**Shape trigger:** a validator or guard resolves its scan scope from optional config keys (facts files, env vars) and has a default-exclusion that a malformed value could quietly disable.
+
+**Rule:** Resolve each key in one place with a three-way split: missing uses the default silently; present-but-blank warns and falls back to the default; a value that degenerates to no-op (`.` / `..`) warns and falls back too. Pin all three with selftests, including the degenerate-value case. Example: a blank backlog-home key in a facts file made a location gate scan the whole repo including the directory it was supposed to exclude; only an explicit both-token fixture proved the exit code stayed correct.
+
+**Why:** a review found that an empty value disabled the home exclusion without any signal; the fix added per-key warnings and a dedicated blank-key selftest.
+
+**See also:** #72 (guards must fail closed when input is absent), #282 (probe the failure mechanism).
+
+## 284. macOS mktemp ignores TMPDIR; isolate probe leaks with a mktemp shim
+
+**Principle:** Family H (verify the real thing, not the abstraction: a TMPDIR-env override is an abstraction; macOS mktemp takes its directory from the system user-temp config and ignores TMPDIR entirely, so a probe that "isolates" via TMPDIR watches a directory the script never writes to)
+
+**Shape trigger:** validating an embedded or third-party bash script's temp-file lifecycle by pointing TMPDIR at a probe directory and asserting it stays empty or counting leftovers there.
+
+**Rule:** Verify the isolation mechanism once before trusting it (`env TMPDIR="$d" mktemp; ls -A "$d"`). On hosts where mktemp ignores TMPDIR (macOS), redirect creation instead: export a `mktemp` shell function (bash `export -f`, honored by the child `bash script`) that creates exclusive files/dirs under a `$PROBE_TMP` dir and prints the path, then assert on `$PROBE_TMP` contents after the run.
+
+**Why:** a leak probe for a temp-file leak on an early-exit path ran `env TMPDIR=... bash script` and asserted the probe dir empty; macOS mktemp ignored TMPDIR, the assertions were vacuous, and the real leftover sat in the system temp directory.
+
+**See also:** #246 (a behavioral claim needs a probe, not an absence-grep).
+
+## 285. Probe runtime-tree topology before acting on a sync or vendored-copy finding
+
+**Principle:** Family H (verify the real thing, not the abstraction: "the runtime tree is a vendored copy of the repo" is an assumption about filesystem topology; `ls -la` / `readlink` is the probe)
+
+**Shape trigger:** a review finding or fold decision premised on how a runtime or vendored tree relates to its canonical repo (drift or revert risk from a later sync, a needed mirror edit) when no one has probed the link.
+
+**Rule:** Before folding or rejecting a topology-premised finding, run one filesystem probe on the runtime path and record the output next to the finding. A symlink to the canonical repo makes "a later sync can revert these edits" impossible in both directions; a real copy makes the finding live. Rejecting a finding with an unprobed topology claim is the same defect inverted.
+
+**Why:** a plan review staged a Medium finding claiming edited skill files were vendored copies a bidirectional sync could silently revert; one `ls -la` showed the runtime path was a symlink to the repo itself (repo canonical), so the finding folded as factually wrong - but only because the session remembered the topology. The probe, not the memory, is the defense.
+
+**See also:** #246 (a behavioral claim needs a probe, not an absence-grep).
+
+## 286. Derive an acceptance grammar from the live emitted corpus, not the format in your head
+
+**Principle:** Family H (verify the real thing, not the abstraction: a hand-designed grammar encodes the writer's mental model of a format; the emitting component's real output is the ground truth)
+
+**Shape trigger:** writing or tightening a regex/parser that must accept lines another component emits (verdict lines, log markers, report headers), especially after a spec says the format is "fixed".
+
+**Rule:** Before finalizing the grammar, enumerate the shapes the emitter actually produces: grep the full population of real artifacts (all rounds, all authors) and list every surface form (bullet prefix, bold wrapper, trailing prose, alias label). Pin one accept-fixture per observed shape plus the paired rejection shape for each confusion pair (yes-form vs no-form). A grammar that passes only the author-invented fixture will reject real certified artifacts.
+
+**Why:** a readiness validator's verdict-line regex matched a single canonical shape; real review rounds emitted three more surface forms of the same verdict (bullet, bold, trailing prose), so two certified-ready plans failed the gate until fixtures regenerated the grammar from the corpus.
+
+**See also:** #246 (a behavioral claim needs a probe, not an absence-grep), #274 (gate through fixture-built state).
+
+## 287. Positively control forbidden-match validation greps in the execution shell
+
+**Principle:** Family H (verify the real thing, not the abstraction: a forbidden-match guard whose pattern matches NOTHING also passes every sweep and "fires" in the fail direction vacuously; running the pattern against a known-present sibling is the probe)
+
+**Shape trigger:** a validation block pins a forbidden-match or line-count check on a literal line shape (pin lines, markers, table rows) using a regex with anchors or embedded variables, and the authoring round reports "guard fires today" from a zero-match result.
+
+**Rule:** For every forbidden-match or count validation grep: (1) execute it in the same shell and grep implementation that will run it at gate time, not just any shell; (2) positive-control the pattern once against a known-present sibling of the target shape, because a zero from a dead pattern is indistinguishable from a true no-match; (3) for literal pin lines, prefer fixed-string matching (`grep -F`), since regex anchors add portability risk without adding discrimination.
+
+**Why:** a plan review round verified a stale-pin guard "fires today", but the guard's anchored regex (line anchor plus embedded variable) matched zero lines under the harness grep wrapper; the reported fire was vacuous and the guard was dead. The next round caught it only by re-executing the greps in the harness shell and cross-checking against the system grep.
+
+**See also:** #220 (a vacuous sweep survived rounds plus a false verification claim), #246 (a behavioral claim needs a probe, not an absence-grep).
+
+## 288. An archived plan's validation block is point-in-time evidence, not a living gate
+
+**Principle:** Family H (verify the real thing, not the abstraction) - the real thing a completed plan's Validation block proves is the tree AS IT WAS at execution time; after the archive, path moves and later skill evolution silently desync every path-anchored and count-anchored probe in it.
+
+**Shape trigger:** a new plan (or audit) must re-run the Validation block of an already-executed, archived plan, or assert "the archived block still passes".
+
+**Rule:** Never claim a verbatim rerun of an archived block. Re-derive it with each adaptation documented beside the run: (1) remap paths that moved at archive time (plans/backlog files into their completed dirs); (2) re-derive pins that quote spans the new plan intentionally rewords, recording each as RED-today versus green-today keep-guard; (3) re-derive count guards whose target evolved after the archive (for example a rules file renumbered by a later plan), asserted against today's on-disk state, not the archived expectation. The record of what was adapted lives in the NEW plan's Validation section, never as edits to the archived artifact.
+
+**Why:** a backlog-promotion plan's validation reused two archived blocks; the residue-pass block failed on a backlog path that had archived, and the r5 block failed on a rule-count check the residue-pass plan itself had later renumbered; both were pre-existing drift, and an undifferentiated "block fails" would have either blocked the plan or, worse, invited editing archived history to make it pass.
+
+**See also:** #264 (pin/text drift across folds of a live artifact), #193 (archive completeness gate).
+
+## 289. Fenced-block extraction must tolerate indented fences or it passes vacuously
+
+**Principle:** Family H (verify the real thing, not the abstraction) - extraction facet: a validation command that extracts an embedded code block with line-anchored fence patterns is a claim that non-empty content was extracted; an empty extraction is a silent pass, not a pass.
+
+**Trigger:** a plan or check embeds `awk '/^```bash$/'`-style extraction (or any line-anchored start/end pair) over a Markdown document whose fences may be indented (a fenced block nested inside a list item is typically indented three spaces).
+
+**Rule:** Make fence patterns whitespace-tolerant (`/^[[:space:]]*```bash/` and the matching close), then assert the extraction is non-empty (`test -n`) before running the downstream check (for example `bash -n`). An extraction that yields zero lines makes any downstream check vacuously green; prove the extraction at authoring time by counting extracted lines against the real target, not by trusting the pattern.
+
+**Why:** a plan's Validation Commands extracted the target file's only bash fence with `^```bash$`; the fence was indented inside a list item, extraction returned zero lines, and `bash -n` passed on empty input. A review round caught it as a vacuous gate; the strict pattern and tolerant pattern differed by exactly the leading whitespace the target legitimately contains.
+
+**See also:** #281-adjacent Family H count guards (the same empty-input-silently-passes shape over occurrence counts); #264 (mechanically re-verify exact-text contracts after folds - run this extraction check there too).
+
+## 290. Pins needing shell escaping break textual pin-vs-prescription audits
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a pin embedded in a bash fence and the prescription in prose are two textual forms of one contract; escaping a character in one form (backtick, dollar) makes the textual comparison diverge even though runtime matching still works.
+
+**Shape trigger:** authoring or auditing a plan whose validation block pins spans that contain backticks, dollars, or quotes.
+
+**Rule:** (1) Prefer pinned spans with no characters the embedding shell escapes; pick a backtick-free distinctive fragment of the same sentence. (2) If escaping is unavoidable, the pin audit must compare the post-parse form (strip escape characters from both sides), never the raw fence text. (3) A pin that matches at runtime but not in the audit, or vice versa, is pin/text drift; fix both forms in one edit.
+
+**Why:** a plan's validation block pinned a heading in escaped-backtick form while the task's fenced snippet carried plain backticks; the mechanical pin-vs-prescription audit (#264) false-alarmed on the raw text, and an audit that grepped targets with the raw escaped bytes would have stayed red against a correct implementation.
+
+**See also:** #264 (mechanical re-verification of exact-text contracts), #287 (positive-control validation greps in the execution shell).
+
+## 291. A deleted automation record is not evidence the work stopped
+
+**Principle:** Family H (verify the real thing, not the abstraction) - an automation/cron list is an inventory of scheduled records, not a liveness witness for the work itself; absence of a record proves only that nothing will re-fire.
+
+**Trigger:** auditing scheduled or automated work against in-flight work to report gaps, duplicates, or stale entries.
+
+**Rule:** (1) Read the record list as records only: a missing or deleted entry means "no scheduled re-fire exists", nothing more. (2) Before flagging a gap, check the liveness evidence the list cannot show: running sessions, freshly created artifacts, or the user. (3) A one-shot record deleted after firing (for example to free a retained-task-limit slot) leaves its work alive as a detached session; report that possibility instead of declaring the work missing, and mark unconfirmed liveness as unverified rather than resolved.
+
+**Why:** an audit of scheduled automations reported the highest-priority authoring group as missing from the queue because its one-shot record no longer appeared in the list (the slot had been reused for another automation). The authoring session was in fact running; the user corrected the report. The record list could never have shown the detached session; only session state or the user could.
+
+**Distinguishing from #276:** that lesson keeps a record you own schedulable after an update; this one governs reading records as liveness evidence during an audit of work you may not own.
+
+**See also:** #239 (verify the real thing, not the abstraction), #275 (scheduling is not executing).
+
+## 292. A preferred structured field over a legacy parse must fall back on non-conforming legacy values
+
+**Principle:** Family H (verify the real thing, not the abstraction) - strictness added over a legacy lenient parse applies to NEW records only; the live corpus decides what the consumer must tolerate.
+
+**Trigger:** writing "prefer X over Y" precedence semantics (a structured field over a prose rule, a typed column over a free-text one) while pre-migration artifacts persist.
+
+**Rule:** (1) Make ONLY a conforming value decisive: absent, malformed, or foreign-shaped legacy values fall back to the old rule and never newly fail readiness they would have passed the day before. (2) Put fail-closed rejection of non-conforming values at the schema gate for NEW records, not in the consumer's precedence branch. (3) Probe the live corpus for colliding legacy keys before prescribing the precedence; a grep for the field name plus a shape check beats an assumption, and dict-valued legacy values are the usual collision.
+
+**Why:** a readiness plan added a sidecar verdict field preferred over a legacy prose-token rule and initially rejected any non-conforming field value; the live corpus held dict-valued legacy keys under the same name that passed readiness, so the strict consumer would have newly failed them. The review round caught it; the fix made only exact conforming strings decisive and everything else fell back.
+
+**See also:** #246 (inventory a field's existing gate owners before adding a gate), #253 (derive a fixture's expected post-state by executing the rule).
+
+## 293. Inject the signal at the resource-creation hook to probe a trap window
+
+**Principle:** Family H (verify the real thing, not the abstraction) - position greps prove where the trap registration sits, not that a signal arriving inside the window actually reaches the handler; the behavioral witness needs the signal delivered inside the window, deterministically.
+
+**Trigger:** any plan that moves a trap registration, lock acquisition, or other cleanup wiring earlier, where the failure mode is an event arriving between two lines of a script.
+
+**Rule:** Inject the signal inside the test shim that replaces the allocating command. Count completed calls in a scratch file (command-substitution subshells share no variables, so in-process counters reset every call). On the Nth call, send the signal to `$$` AFTER the resource path has been printed: `$$` resolves to the parent script from inside a substitution subshell, the parent owns the trap and handles it at the next command boundary, so printing first decides whether the new resource is observable at cleanup. One fixture then yields both witnesses: pre-fix the default signal disposition kills the run (exit 128+N) and leaks every created resource; post-fix the handler runs and removes them.
+
+**Why:** a plan closing a SIGINT/SIGTERM window before a bash cleanup trap needed a behavioral RED/GREEN pair; sleep-based background signals are flaky and reviewers flag them, while a shim-triggered `kill -TERM "$$"` after the third `mktemp` reproduced `rc=143 leftovers=3` before the fix and `rc=0 leftovers=0` after, deterministically, with no timing assumptions.
+
+**See also:** #246 (behavioral claims need a probe, not an absence-grep), #287 (positive-control validation greps in the execution shell).
+
+## 294. Scope extensions must not enter a plan via high-confidence assumptions
+
+**Principle:** Family H (verify the real thing, not the abstraction) - the stated primary goal (ticket title / gist) is the real scope; adjacent security, identity, tenancy, or sibling-service work framed as "fail-closed" or "owned elsewhere" is a completeness abstraction, not proof it belongs in this plan.
+
+**Trigger:** during `plans` Phase 1, a proposed Terms/Assumptions/Tasks bullet adds a second independent product (auth stack, principal model, cross-service header, multi-tenant shape) while the primary goal is a narrower boundary; or OUT-of-scope / "owned by another ticket" prose coexists with Tasks that implement that concern.
+
+**Rule:** (1) Treat any such addition as a **scope extension**, not as a high-confidence assumption eligible for batch-confirm. (2) Invoke `grill-with-docs` and get an explicit keep / split / defer decision before the work enters the plan file. (3) Default recommendation: split or defer; keep the current plan minimal for the primary goal. (4) Do not rely on `execute-plan` to re-open scope; it implements the plan faithfully. Until the `plans` skill hard gate lands, track the skill edit under `docs/history/backlog/2026-09-05-plans-scope-extension-requires-grill-with-docs.md`.
+
+**Why:** a feature plan absorbed a neighboring auth/tenant concern through long assumption bullets; `execute-plan` and review loops then reinforced that expanded Review Scope. The confidence gate alone did not stop overscope because agents rated the extension "high confidence."
+
+**See also:** coding_guidelines.md #28 (Minimal Solution Ladder / YAGNI), `plans` Phase 1 confidence gate, `grill-with-docs`, backlog `2026-09-05-plans-scope-extension-requires-grill-with-docs.md`.
+
+## 295. Parse git machine output in machine mode, not display mode
+
+**Principle:** Family H (verify the real thing, not the abstraction) - porcelain output without `-z` is a human display rendering, not the machine contract; parsing it as data silently misreads paths.
+
+**Trigger:** any script or checker that parses `git status --porcelain`, `git diff --name-only`, or similar plumbing output and matches the extracted text against filesystem paths, especially with unicode, spaces, or untracked directories in play.
+
+**Rule:** (1) Always pass `-z` (NUL-delimited) and split on the NUL byte; never parse newline-delimited porcelain. (2) Pin UTF-8 decoding at the subprocess boundary. (3) With `-z`, untracked directories are listed file-by-file with `--untracked-files=all` semantics and paths come verbatim, so separate directory-collapsing and octal-escape (`core.quotepath`) unquoting passes are both unnecessary and wrong. (4) Distinguish error classes by exit code: usage/internal errors (traceback, exit 2) must not be confusable with policy violations (exit 1).
+
+**Why:** a cleanup-scope baseline checker parsed newline-delimited `git status --porcelain`; untracked directories collapsed to a dir path so per-file dirty baselines were missed, and `core.quotepath` octal escapes made a unicode filename compare unequal to its on-disk name. Rewriting to `-z` parsing fixed both and deleted the bespoke unquote/rename-strip helpers.
+
+**See also:** #292 (fall back on non-conforming legacy values) for the error-exit-class half, git documentation on `-z` and `core.quotepath`.
+
+## 296. Session constraints must not be written into plans
+
+**Principle:** Family D (single source of truth) - a task-prompt constraint is scoped to the session that received it; copying it into a durable artifact (plan, ADR, ticket) creates a second, unscoped authority whose validity silently outlives the session that held it.
+
+**Trigger:** authoring a plan (or any durable artifact) inside a run that carries operational constraints from its scheduling prompt ("do not create a new branch", "never push", "work on the current branch"); the plan's assumptions, gist, or acceptance criteria are about to record those constraints with a basis line like "task constraint".
+
+**Rule:** (1) Treat scheduling-prompt constraints as authoring-session-scoped: they bind the authoring run's own git behavior only. (2) Never write them into the plan as assumptions or acceptance criteria; keep the plan branch-agnostic and push-agnostic so execution branching follows the executor's own branch-setup flow. (3) Before finishing, sweep assumptions, gist, and acceptance criteria for "current branch", "no new branch", hardcoded branch names, and "never push"; delete every hit. (4) At the prompt level, label such constraints "Authoring-session constraints (apply to this authoring run only; do not write them into the plan document)".
+
+**Why:** four authored plans carried "work on the current branch (`main`), no new branch, never push; basis: task constraint"; `execute-plan` then read the plan as the authority and skipped branch setup entirely, executing on the default branch. The constraint existed to protect the authoring run, which commits onto whatever in-flight branch it finds; at execution time it suppressed the executor's normal dedicated-branch setup. The de-leak spanned two repos before the prompt template was fixed.
+
+**See also:** #294 (scope extensions must not enter a plan via assumptions - sibling leak channel into the same assumptions list).
+
+## 297. Complete a promoted backlog origin only for findings the plan actually folded
+
+**Principle:** Family H (verify the real thing, not the abstraction) - a plan header's backlog list is a pointer, not coverage evidence; coverage is proven by the landed edits.
+
+**Trigger:** the promoted-backlog archive step: an execution ends by `git mv`-ing header-listed backlog items to the completed dir and marking them `Status: done`.
+
+**Rule:** (1) Before marking an origin done, diff each of its findings against the plan's task edits AND its Assumptions; a header list can be a superset when the assumptions scope items out to another owner. (2) Leave a partially covered origin open with a note recording which items remain and why; complete only the fully covered origins. (3) Keep the verification at archive time, not at authoring time - only the landed tree proves what was folded.
+
+**Why:** an execution's archive step marked a backlog origin done even though the plan's assumptions explicitly scoped that origin's two items out to an in-flight owner; the item closed with its findings unfixed until a post-archive re-read caught it, and the rename commit then needed a corrective reopen.
+
+**See also:** #294 (unvetted content entering a plan's assumptions list - sibling header/assumptions trust failure), `execute-plan` Phase 4 promoted-backlog rule.
+
+## 298. A shell syntax check does not validate the embedded DSL program
+
+**Principle:** Family H (verify the real thing, not the abstraction) - `bash -n` proves the shell quoting parses; it never executes the sed/awk/regex payload, and a silent fallback hides the runtime failure.
+
+**Trigger:** adopting a prescribed code fragment (from a review fix, plan, or coordinator prompt) that embeds a DSL program inside shell quoting, especially when the snippet ends in a fallback (`2>/dev/null`, `|| default`).
+
+**Rule:** (1) Execute the fragment against the real input it will run on before adopting it; a syntax check of the wrapper is not execution of the payload. (2) Character-class and regex typos (for example a `["']` class missing its closing bracket) pass `bash -n` and fail only in the DSL. (3) When smoke-testing, run once with stderr visible so the silent fallback cannot turn a broken program into a plausible empty result. (4) If a prescription proves broken on execution, deviate with the corrected form and record the deviation and its evidence.
+
+**Why:** a review round prescribed a sed literal whose bracket classes were missing their closing `]`; `bash -n` accepted it as valid quoting, but BSD sed reported unbalanced brackets, and the snippet's `2>/dev/null` fallback would have silently emptied the parsed value. The implementing agent's scratch smoke test with stderr visible caught it before commit.
+
+**See also:** #268 (`bash -n` and stubbed dry-runs before shipping a script), #287 (positive-control validation greps in the execution shell).

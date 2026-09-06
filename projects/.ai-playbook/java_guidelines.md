@@ -145,3 +145,21 @@ Return a concrete scalar or domain type that matches the query, or use a result 
 intentionally consuming rows without returning them. This is especially important for SQL
 functions that perform an action but still produce a result row, such as transaction-scoped
 database lock functions.
+
+## 14. Sealed Types Cannot Permit Another Package on the Classpath
+
+`sealed` plus `permits` across packages requires a named module (`module-info.java`). A typical
+Maven classpath build is an unnamed module. `javac` then rejects a public sealed type in package A
+that permits an implementation in package B.
+
+Do not choose `sealed` as the closure mechanism for a public API type whose only allowed
+implementation lives in another package unless the project already compiles as named modules.
+Compile the intended package split first. If that fails, keep a public interface (or abstract type)
+and enforce closure with package-private constructors, a package-private factory, and an
+architecture test that the allowed implementation is the only `implements` site.
+
+Named-module `permits` across packages remains valid when the project actually uses JPMS.
+
+## 15. Prefer imports over fully qualified type names
+
+See `jvm_guidelines.md` #12 (Java and Kotlin).

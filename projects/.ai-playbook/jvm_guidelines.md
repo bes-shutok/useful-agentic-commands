@@ -250,3 +250,78 @@ class ExampleIT {
     private SomeMapper someMapper;
 }
 ```
+
+## 10. `@ConditionalOnMissingBean` on `@Component` can self-skip
+
+Do not put `@ConditionalOnMissingBean(OwnType.class)` (or the same type via
+`@ConditionalOnMissingBean`) on a class that is itself a `@Component` /
+`@Service` of `OwnType`. During condition evaluation Spring may already see
+that candidate bean definition, so `OnBeanCondition` treats the type as
+present and skips registration. Neutral or fallback beans then never appear.
+
+**Required pattern:** register defaults from a `@Configuration` class with
+`@Bean` methods annotated `@ConditionalOnMissingBean(OwnType.class)`. The
+condition then checks for other beans of that type, not the defining method's
+own candidate in a way that vacuously skips.
+
+**Verify:** after wiring a missing-bean fallback, assert the bean exists in a
+full application context (or a slice that loads that `@Configuration`), not
+only that the class compiles.
+
+## 11. Primary Actuator health includes every contributor
+
+Spring Boot's primary `/actuator/health` group always includes every
+`HealthIndicator` / `HealthContributor`. Setting
+`management.health.group.<name>.exclude` (including a group named `default`)
+does **not** remove a contributor from that primary aggregation. A
+readiness-only indicator that is DOWN will still fail primary health and can
+make integration tests or orchestrators treat the process as unhealthy.
+
+**Required pattern:** register a `HealthEndpointGroupsPostProcessor` bean that
+wraps `groups.getPrimary()` and returns `false` from `isMember` for the
+contributor that must stay off primary health. Keep a separate named group
+(and path) for the readiness-only probe.
+
+**Verify:** assert primary `/actuator/health` stays UP when the excluded
+contributor is OUT_OF_SERVICE, and assert the named group path still reports
+that contributor's status.
+
+## 12. Prefer imports over fully qualified type names
+
+Use a normal `import` (or Kotlin import) and the simple name for annotations and
+constructor or type references in production and test code. Do not write
+`@org.springframework.stereotype.Component`, `@lombok.RequiredArgsConstructor`,
+or `new com.example.Foo(...)` when a simple-name import is possible.
+
+When review or self-check fixes one fully qualified name, scan every **PR-touched**
+source file for the same pattern (FQN annotations and FQN `new` / type uses for
+types this change introduced or already imports elsewhere) and fix them in the
+same change set.
+
+Keep fully qualified names only when intentional: `package-info` / module
+metadata, or avoiding a simple-name clash (for example generated wire enums vs
+domain enums with the same short name). Do not rewrite pre-existing FQN style
+outside the PR diff just for uniformity.
+
+Unused-import scanners do not catch this: both forms compile. Treat it as style
+hygiene next to unused-import cleanup, not as the same check.
+
+## 13. Classify sibling HTTP I/O at the adapter boundary
+
+When a Spring `RestTemplate` / `RestClient` / `WebClient` call fails with
+`ResourceAccessException`, catch it at the outbound adapter and map to an
+explicit domain transport outcome before the error mapper runs. Do not let the
+exception escape as an unhandled 500.
+
+**Required pattern:**
+1. Treat connect refused, DNS failure, and `HttpConnectTimeoutException` as
+   **not-sent** (the request never reached the sibling).
+2. Treat read timeout and other I/O after the request may have left as
+   **unknown-commit** (or the project's equivalent).
+3. Feed those outcomes into the same retry / client-error policy as HTTP status
+   mapping. Do not emit caller `Retry-After` for not-sent or unknown-commit
+   unless the project contract explicitly says otherwise.
+
+**Verify:** unit tests for connect-refused and read-timeout paths; an
+integration test that the published status and retry header match the outcome
+class (including omit-`Retry-After` when required).

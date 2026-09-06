@@ -84,6 +84,7 @@ Other vendored skills (`done`, `github-pr-workflow`, `receiving-review`, `doing-
 |---|---|
 | `scripts/facts_paths.py` | Facts-file key resolution and repo-anchor/project-key derivation (stdlib leaf). |
 | `scripts/validate_review_staging.py` | Review staging doc and stats-sidecar validator; sidecar/conservation authority. |
+| `scripts/check_backlog_inbox_location.py` | Rejects files matching backlog-inbox filename shapes outside the backlog home (tracked tree plus untracked files in named hot dirs). Run `python3 scripts/check_backlog_inbox_location.py --selftest` for the built-in selftest. |
 | `scripts/summarize_review_stats.py` | Private review corpus discovery, conservation audit, and effectiveness report for Phase 2 review-effectiveness telemetry. Allowlisted facts-driven discovery (imports `facts_paths`), SHA-256 inventory into a local-only baseline under `~/.ai-playbook/review-telemetry/`, single-authority cutover classification (delegates per-sidecar classification to `validate_review_staging`), TOCTOU-safe private permissions, and a process-wide advisory lock across discover to publish. Aggregates current and legacy sidecars into cohort comparisons and emits a privacy-safe effectiveness report (`--json-report` / `--markdown-report`) with per-cohort `retain`, `review needed`, or `inconclusive` verdicts and an overall verdict. Path-level data and identifiers never enter tracked files. Run `python3 scripts/summarize_review_stats.py --selftest` for the built-in selftests. |
 
 ### Review Effectiveness Report

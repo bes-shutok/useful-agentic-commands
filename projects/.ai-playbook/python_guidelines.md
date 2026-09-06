@@ -12,12 +12,12 @@ When constructing CSV, TSV, or fixed-width test data for any parser or reader te
 1.1. Verify column alignment immediately by printing the parsed row as a dict:
 `print(dict(zip(header, row)))`. Do this as the first debug step, not after guessing.
 
-1.2. Copy working test rows from existing tests and modify values only — never construct
+1.2. Copy working test rows from existing tests and modify values only; never construct
 tabular rows from scratch. Hand-counting delimiters is the single biggest source of wasted
 debug iterations in parser tests.
 
 1.3. When a test row fails, print the parsed dict first. Do NOT add or remove delimiters
-blindly — find out where fields actually land.
+blindly; find out where fields actually land.
 
 1.4. Assert column counts explicitly in test setup: `assert len(row) == expected_count`.
 This catches misalignment before it manifests as a wrong-value bug.
@@ -38,7 +38,7 @@ from incomplete removal.
 Never use `__getattr__` to delegate attribute access from a wrapper to an inner object:
 
 ```python
-# ❌ WRONG — __getattr__ delegation breaks type checkers
+# ❌ WRONG: __getattr__ delegation breaks type checkers
 @dataclass
 class AcquisitionContext:
     acq: CryptoAcquisition
@@ -53,11 +53,11 @@ completion for the proxied fields.
 
 **Fix:** Add the extra fields directly to the domain entity or to a separate named parameter.
 If the domain entity is immutable and processing metadata must be attached at a different
-layer, use a `NamedTuple` or a plain `@dataclass` with all fields declared explicitly — never
+layer, use a `NamedTuple` or a plain `@dataclass` with all fields declared explicitly: never
 delegate via `__getattr__`.
 
 ```python
-# ✅ GOOD — all fields explicit, type-checker verified
+# ✅ GOOD: all fields explicit, type-checker verified
 @dataclass(frozen=True)
 class CryptoAcquisition:
     date: str
@@ -91,22 +91,22 @@ def test_loads_flags(monkeypatch, tmp_path):
 ```
 
 This extends the `Path(__file__)` pattern in §4 to constants that are computed
-once at module load — they are equally fragile and require the same monkeypatch isolation.
+once at module load: they are equally fragile and require the same monkeypatch isolation.
 
 ## 5. Resource-Release Flag Must Be Set After Successful Release Only
 
 When a boolean flag signals that a resource was successfully released, only set it inside
-the success branch — never unconditionally after a swallowed exception:
+the success branch: never unconditionally after a swallowed exception:
 
 ```python
-# ❌ WRONG — flag set even when close() raised and was swallowed
+# ❌ WRONG: flag set even when close() raised and was swallowed
 try:
     resource.close()
 except Exception as e:
     logger.error("close failed: %s", e)
 released = True  # resource may still be open!
 
-# ✅ CORRECT — flag only on confirmed release
+# ✅ CORRECT: flag only on confirmed release
 try:
     resource.close()
     released = True
@@ -117,18 +117,18 @@ except Exception as e:
 Setting the flag unconditionally after a swallowed close exception means downstream
 `finally` blocks skip the cleanup path, creating a resource leak.
 
-## 6. Module-Level Logger — Never Define `getLogger` Per-Call
+## 6. Module-Level Logger: Never Define `getLogger` Per-Call
 
 Define the logger once at module level. Never call `logging.getLogger(__name__)` inside a
 helper function body, even though the call is cached and thread-safe:
 
 ```python
-# ❌ WRONG — redundant call on every invocation, especially costly in hot loops
+# ❌ WRONG: redundant call on every invocation, especially costly in hot loops
 def _process_row(row):
     logger = logging.getLogger(__name__)
     logger.warning("bad row: %s", row)
 
-# ✅ CORRECT — module constant, defined once at import time
+# ✅ CORRECT: module constant, defined once at import time
 logger = logging.getLogger(__name__)
 
 def _process_row(row):
@@ -138,14 +138,14 @@ def _process_row(row):
 ## 7. Encode In-Place Mutation Contracts in Function Names
 
 When a helper's primary effect is mutating caller-owned collections (rather than returning a
-value), encode that contract in the name — e.g. suffix with `_inplace`:
+value), encode that contract in the name: e.g. suffix with `_inplace`:
 
 ```python
-# ❌ UNCLEAR — caller may assume the return value is the complete result
+# ❌ UNCLEAR: caller may assume the return value is the complete result
 def _match_consumption_to_lots(pool, ...):
     ...  # also mutates pool, carryover_cost, partial_tx_keys
 
-# ✅ CLEAR — mutation is auditable at the call site
+# ✅ CLEAR: mutation is auditable at the call site
 def _consume_against_pool_inplace(pool, ...):
     ...  # caller knows pool is being modified
 ```
@@ -157,16 +157,16 @@ the side effects on the passed-in collections.
 
 When building a lookup dict with composite tuple keys, every lookup site must construct
 the exact same key shape. A type annotation `dict[str | tuple[str, str], Decimal]` permits
-both shapes but does not enforce consistency — a lookup using a plain `str` against a dict
+both shapes but does not enforce consistency: a lookup using a plain `str` against a dict
 built with `(str, str)` tuple keys will always miss, silently returning the default value
 (e.g. zero).
 
 ```python
-# ❌ BUG — dict built with (tx_key, platform) tuples, looked up with plain string
+# ❌ BUG: dict built with (tx_key, platform) tuples, looked up with plain string
 carryover = {(tx_key, platform): cost}          # build
 result = carryover.get(acq.tx_key, Decimal(0))  # lookup always returns 0
 
-# ✅ CORRECT — key shape is consistent
+# ✅ CORRECT: key shape is consistent
 def _has_carryover_for_tx_key(d: dict, tx_key: str) -> bool:
     return any(isinstance(k, tuple) and k[0] == tx_key for k in d)
 ```
@@ -182,10 +182,10 @@ Underscore-prefixed functions are module-internal by convention. Re-exporting th
 package path rather than the actual module, and obscures where the code lives.
 
 ```python
-# ❌ BAD — crypto_fifo/__init__.py exposes internals
+# ❌ BAD: crypto_fifo/__init__.py exposes internals
 from .parsing import _dedup_by_tx_key, _order_platforms_for_transfers  # private!
 
-# ✅ CORRECT — callers import from the defining submodule directly
+# ✅ CORRECT: callers import from the defining submodule directly
 from myapp.submodule.parsing import _dedup_by_tx_key
 ```
 
@@ -196,12 +196,12 @@ must be imported directly from their defining submodule.
 
 Pytest collects test functions and methods by name prefix only. Methods named after the
 behaviour they describe (for example `finds_funding_fee_event_with_timestamp`,
-`returns_empty_when_labels_missing`) without a `test_` prefix are silently skipped —
+`returns_empty_when_labels_missing`) without a `test_` prefix are silently skipped;
 pytest reports `0 collected` and the RED phase never executes, so a GREEN implementation
 can pass vacuously or a missing import can go undetected.
 
 ```python
-# ❌ WRONG — pytest collects zero of these
+# ❌ WRONG: pytest collects zero of these
 class TestDerivativesThScanner:
     def finds_funding_fee_event_with_timestamp(self, tmp_path):
         ...
@@ -211,7 +211,7 @@ class TestDerivativesThScanner:
 ```
 
 ```python
-# ✅ CORRECT — every test method is prefixed
+# ✅ CORRECT: every test method is prefixed
 class TestDerivativesThScanner:
     def test_finds_funding_fee_event_with_timestamp(self, tmp_path):
         ...
@@ -233,7 +233,7 @@ linters (E501), are hard to modify when a column shifts, and invite column-count
 python_guidelines §1 was written to prevent.
 
 ```python
-# ❌ BRITTLE — long literal, E501 violations, hard to modify
+# ❌ BRITTLE: long literal, E501 violations, hard to modify
 path.write_text(
     "Date,Type,Tag,Sending Wallet,Sent Amount,Sent Currency,Receiving Wallet,Received Amount,Received Currency,Description\n"
     "2025-01-24 20:00:00 UTC,crypto_withdrawal,Funding fee,ByBit,0.08838575,USDT,,,\n"
@@ -241,7 +241,7 @@ path.write_text(
 ```
 
 ```python
-# ✅ ROBUST — rows as dicts, header written once, csv handles quoting and alignment
+# ✅ ROBUST: rows as dicts, header written once, csv handles quoting and alignment
 def _write_th_csv(path, rows):
     with path.open("w", newline="") as f:
         f.write("Transaction report 2025\n\n")  # Koinly preamble
@@ -260,10 +260,10 @@ a dict literal.
 
 ## 12. Verify Pipeline Stage Ordering With monkeypatch Spies, Not Full Mocks
 
-When an integration test needs to assert that stage A runs before stage B before stage C in a multi-step pipeline (for example: validate → dedup → split), do not mock the stages themselves — that discards the real integration coverage and only proves the mocks were called in order. Instead, wrap each real stage with a thin monkeypatch spy that records the call order, then delegates to the original function.
+When an integration test needs to assert that stage A runs before stage B before stage C in a multi-step pipeline (for example: validate → dedup → split), do not mock the stages themselves: that discards the real integration coverage and only proves the mocks were called in order. Instead, wrap each real stage with a thin monkeypatch spy that records the call order, then delegates to the original function.
 
 ```python
-# ✅ Spy pattern — real stages run, call order is captured
+# ✅ Spy pattern: real stages run, call order is captured
 def test_dedup_runs_after_validation_before_split(monkeypatch):
     call_order = []
 
@@ -304,7 +304,7 @@ def test_dedup_runs_after_validation_before_split(monkeypatch):
 
 **When NOT to use it:**
 
-- The order is enforced by the language (sequential statements in a single function) — a unit test of that function already covers it.
+- The order is enforced by the language (sequential statements in a single function): a unit test of that function already covers it.
 - The stages share mutable state that a spy would perturb (spy must be pure passthrough).
 
 **Anti-pattern:** Mocking `apply_derivatives_dedup` with `MagicMock(return_value=[])`. The test asserts the mock was called, but the real dedup never runs. A bug that makes the real dedup raise on the fixture (which would surface as a pipeline failure in production) is invisible to the test.
@@ -400,8 +400,8 @@ RED time; never defer it as "polish" after GREEN.
 
 When a test asserts that a code path "does not call" a set of helper lookups, and the
 production predicate that selects those lookups is a short-circuit `or` (or `and`) over
-two or more of them — for example `is_known = asset in popular_tokens() or
-contains_popular_token(asset)`, where the test wants to assert NEITHER fires — you MUST
+two or more of them: for example `is_known = asset in popular_tokens() or
+contains_popular_token(asset)`, where the test wants to assert NEITHER fires: you MUST
 monkeypatch EVERY lookup in the disjunction, not just the first. Patching only the first
 lookup leaves the second (and third, etc.) UNPINNED: the test's "none fired" assertion
 can pass only because the first spy short-circuited the `or` before reaching the real
@@ -412,7 +412,7 @@ invariant the test was written to pin.
 **Principle:** Family H (Verify the real thing, not the abstraction). The "none of the
 lookups fired" assertion is only as strong as the set of lookups the spy actually covers.
 An unpatched lookup is a hole in the coverage the assertion cannot see. Compounded by
-Family G (Data-loss observability): the regression is silent — no exception, no warning,
+Family G (Data-loss observability): the regression is silent: no exception, no warning,
 just a lookup that runs and a test that still says "0 calls."
 
 ```python
@@ -634,3 +634,26 @@ object bound in its own namespace. This bites dict/vocabulary seams: a builder i
 vocabulary dict must read it via the owning module, and tests that inject colliding fixtures must
 patch the OWNING module (patching the consumer's from-import has no effect). Symptom: a test
 monkeypatch "works" in one consumer and silently no-ops in another.
+
+## 23. str.strip/lstrip/rstrip take a character set, not a substring
+
+`s.strip("at ")` does not remove the suffix `"at "`; it removes any trailing
+characters that appear in the set `{a, t, space}`, so `"reset"` becomes
+`"rese"`. For suffix/prefix removal use slicing (`s[:-len(suf)]`) or
+`str.removesuffix(suf)` / `str.removeprefix(suf)` (3.9+). Treat any
+`strip`-family call whose argument has more than one distinct character, or
+whose argument visually resembles a word, as a probable set-vs-substring bug.
+
+## 24. Replace hand-rolled stderr capture with `contextlib.redirect_stderr`
+
+When a test or selftest needs to capture what a function writes to stderr,
+write `with contextlib.redirect_stderr(buf):` and read `buf.getvalue()` after
+the block. Do not hand-roll the `StringIO` + save/assign/try/finally restore
+dance: it is 4-6 lines per site, easy to get wrong under early exits, and
+multiplied across a dozen capture sites it hides the actual assertion in
+boilerplate. Same for stdout via `contextlib.redirect_stdout`. When the same
+module has many capture sites, hoist `import contextlib` and `import io` to
+module level instead of function-local imports, and drop alias imports
+(`import io as _io`) that only one style of the old pattern needed. Gate to
+check: grep for `sys.stderr =` assignments in test code; each one is a site
+waiting to become `redirect_stderr`.

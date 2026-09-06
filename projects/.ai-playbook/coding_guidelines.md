@@ -563,3 +563,21 @@ Language-agnostic form of the 2026-20 GB incident (Python details in `python_gui
 - Anything that grows per iteration inside a loop (log records, buffers, result lists) inherits the loop's bound. Test frameworks that capture logs or output turn a log-per-iteration infinite loop into unbounded memory growth; the host dies, not the test.
 - Test suites for any language should run under a per-test wall-clock timeout so a runaway test is killed early; treat a timeout as a loop bug, never a flake to suppress.
 - Synthetic test fixtures must model the fields the production code branches on; fixtures skinnier than real input data validate strategies under conditions that cannot occur in production.
+
+## 30. Derive Bit Lengths From Byte Layout Sizes (Multiply, Do Not Divide)
+
+When a binary layout is measured in whole bytes (envelope tag, nonce, fixed-width field) and an API also needs a bit count, define the **byte** constant as the source of truth and derive bits by multiplying (`bytes * 8` / `Byte.SIZE`). Do not define a bit constant and derive bytes via integer division (`bits / 8`): truncation silently under-sizes layout checks when someone later picks a non-byte-aligned bit value.
+
+**Shape trigger:** Paired `*_BITS` / `*_BYTES` constants for crypto or wire framing.
+
+**Example:** AES-GCM tag layout: `TAG_LENGTH_BYTES = 16` then `TAG_LENGTH_BITS = TAG_LENGTH_BYTES * Byte.SIZE` (still 128). Prefer this over `TAG_LENGTH_BITS = 128` with `TAG_LENGTH_BYTES = TAG_LENGTH_BITS / Byte.SIZE`.
+
+## 31. Cite Code in Durable Documents by Stable Anchors, Not Line Numbers
+
+**Principle:** Family C (shared-artifact coordination: a document and the code it describes must co-evolve).
+
+**Shape trigger:** A long-lived document (backlog item, review finding, architecture note, ADR) points at production code as `file.py:NNN` or "the guard at line N".
+
+**Rule:** In any document expected to outlive the current edit, cite code by a stable anchor: a quoted snippet of the target expression plus its enclosing symbol (function, method, or named constant), or a unique searchable string. Never by line number. Line numbers re-stale on every unrelated insert or delete above the target, so each later review round re-finds the same defect; when fixing a stale line cite, replace the cite form itself rather than bumping the number. Line numbers remain fine in throwaway artifacts (diffs, logs, session scratch) whose lifetime is shorter than the code they cite.
+
+**Example:** A residuals backlog item cited a guard predicate as `orchestrator.py:631` and a scrub call as `orchestrator.py:660`. A docstring expansion one review round earlier shifted both by one line; the next review flagged the item as stale. The durable fix kept the quoted predicate and scrub text and referenced the enclosing `_deliver_follow_up` method, plus a line-free description of where the regex constant lives. A coincidentally still-correct line cite in the same item was stabilized too, since it belonged to the same volatile class.
