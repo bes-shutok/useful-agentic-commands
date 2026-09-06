@@ -6,8 +6,10 @@ private corpus discovery and conservation layer:
 
 - Allowlisted facts-driven discovery (imports ``facts_paths``; never re-parses).
 - SHA-256 inventory of every discovered sidecar into a private baseline.
-- Private baseline lifecycle: atomic ``--init-baseline``, read-only
-  ``--strict-audit``, explicit ``--refresh-baseline``, with a transition table.
+- Private baseline lifecycle: atomic ``--init-baseline``, ``--strict-audit``
+  (read-only over sidecar content; normalizes private-file modes to
+  0600/0700, stderr warning if a tighten is refused), explicit
+  ``--refresh-baseline``, with a transition table.
 - Single-authority cutover classification: snapshot members are ``baseline``; a
   discovered sidecar is ``growth`` iff it is not in the snapshot AND its panel
   identities satisfy the five-worker set.
@@ -169,60 +171,119 @@ def _reject_symlink(path: Path) -> None:
         raise PermissionsError(f"refusing to follow symlink target: {path}")
 
 
-def _parent_mode(path: Path) -> int | None:
-    """Return the permission bits of ``path`` (or None if absent)."""
+@contextmanager
+def _pinned_parent(parent: Path, refusal_text: str) -> Iterator[int]:
+    """Pin ``parent`` as a dirfd for the caller's dirfd-relative operations.
+
+    Opens the parent once with ``O_RDONLY | O_DIRECTORY | O_NOFOLLOW |
+    O_CLOEXEC``. Symlink-indicating errnos (``ELOOP``/``ENOTDIR``) surface as
+    ``PermissionsError(refusal_text)`` (per-caller contract); every other
+    errno gets an accurate open-failure message (r2 F2). The fd is closed in
+    a ``finally`` so ownership never duplicates at the call sites.
+
+    The no-follow guarantee covers the parent itself: ``O_NOFOLLOW`` binds
+    only to the final component of this open (the parent), so a symlink
+    swapped onto the immediate parent is refused. Intermediate ancestors
+    above the parent are resolved by path and keep the r2 sibling contract
+    (accepted residual window, review r1 F1).
+    """
     try:
-        st = os.lstat(str(path))
-    except OSError:
-        return None
-    return stat.S_IMODE(st.st_mode)
+        fd = os.open(
+            str(parent),
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise PermissionsError(refusal_text) from exc
+        raise PermissionsError(
+            f"cannot open parent directory: {parent}: {exc}"
+        ) from exc
+    try:
+        yield fd
+    finally:
+        os.close(fd)
 
 
 def tighten_parent_ai_playbook(parent: Path) -> None:
     """Tighten ``~/.ai-playbook/`` (``parent``) to ``0700`` or refuse to run.
 
-    If the dir is group/world-accessible and is a real directory, chmod it to
-    ``0700``. If it is a symlink, refuse. Re-assert on every run.
+    If it is a real directory whose mode differs from ``0700``, reset it to
+    ``0700``. If it is a symlink, refuse. Re-assert on every run. Kernel-grade:
+    the parent is opened once with ``O_DIRECTORY | O_NOFOLLOW`` and both the
+    mode read (``fstat``) and the tighten (``fchmod``) act on that fd, so a
+    symlink swapped in after the pre-check cannot redirect the chmod.
     """
     _reject_symlink(parent)
-    if not parent.is_dir():
-        raise PermissionsError(f"parent is not a directory: {parent}")
-    mode = _parent_mode(parent)
-    if mode is None:
-        raise PermissionsError(f"cannot stat parent: {parent}")
-    if mode != 0o700:
-        # Tighten. If the chmod fails (e.g. read-only filesystem) the OSError
-        # propagates as a hard failure (refuse to run).
-        try:
-            os.chmod(str(parent), 0o700)
-        except OSError as exc:
-            raise PermissionsError(
-                f"cannot tighten parent {parent} to 0700: {exc}"
-            ) from exc
+    with _pinned_parent(parent, f"parent is not a directory: {parent}") as fd:
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise PermissionsError(f"parent is not a directory: {parent}")
+        if stat.S_IMODE(st.st_mode) != 0o700:
+            # Tighten. If the fchmod fails (e.g. read-only filesystem) the
+            # OSError is translated to a hard failure (refuse to run).
+            try:
+                os.fchmod(fd, 0o700)
+            except OSError as exc:
+                raise PermissionsError(
+                    f"cannot tighten parent {parent} to 0700: {exc}"
+                ) from exc
 
 
 def ensure_private_dir(path: Path) -> None:
     """Create ``path`` with ``0o700`` under a cleared umask, rejecting symlinks.
 
     Idempotent: if the dir exists as a real directory with mode ``0700`` it is
-    left alone; if its mode is more permissive it is tightened. Never
+    left alone; if its mode differs from ``0700`` it is reset to ``0700``. Never
     create-then-chmod on the create path: the mode is set atomically by
-    ``os.mkdir(..., 0o700)`` under a cleared umask.
+    ``os.mkdir(..., 0o700, dir_fd=...)`` under a cleared umask. Kernel-grade:
+    the parent is pinned with an ``O_DIRECTORY | O_NOFOLLOW`` dirfd and the
+    final component is created/re-opened dirfd-relative with ``O_NOFOLLOW``,
+    so the mode re-assert (fstat/fchmod) always acts on the pinned directory,
+    never on a path string that a raced symlink could redirect.
     """
     _reject_symlink(path)
+    _reject_symlink(path.parent)
     prev = os.umask(0o077)
     try:
-        try:
-            os.mkdir(str(path), 0o700)
-            return
-        except FileExistsError:
-            pass
-        if not path.is_dir():
-            raise PermissionsError(f"private path is not a directory: {path}")
-        # Re-assert mode on every run.
-        mode = _parent_mode(path)
-        if mode != 0o700:
-            os.chmod(str(path), 0o700)
+        final_flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+        with _pinned_parent(
+            path.parent, f"refusing symlinked parent: {path.parent}"
+        ) as parent_fd:
+            name = path.name
+            try:
+                os.mkdir(name, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                pass
+            try:
+                fd = os.open(name, final_flags, dir_fd=parent_fd)
+            except OSError as exc:
+                # ELOOP joins ENOTDIR/ENOENT: on Linux a raced symlink on
+                # the final component fails this O_NOFOLLOW open with
+                # ELOOP (darwin returns ENOTDIR); both must surface as the
+                # friendly refusal, not a raw OSError traceback.
+                if exc.errno in (errno.ENOTDIR, errno.ENOENT, errno.ELOOP):
+                    raise PermissionsError(
+                        f"private path is not a directory: {path}"
+                    ) from exc
+                raise
+            try:
+                st = os.fstat(fd)
+                if not stat.S_ISDIR(st.st_mode):
+                    raise PermissionsError(
+                        f"private path is not a directory: {path}"
+                    )
+                # Re-assert mode on every run (fd-relative, symlink-proof).
+                # A failed tighten is a hard failure (refuse to run),
+                # translated like tighten_parent_ai_playbook (r3 F4).
+                if stat.S_IMODE(st.st_mode) != 0o700:
+                    try:
+                        os.fchmod(fd, 0o700)
+                    except OSError as exc:
+                        raise PermissionsError(
+                            f"cannot tighten private dir {path} to 0700: {exc}"
+                        ) from exc
+            finally:
+                os.close(fd)
     finally:
         os.umask(prev)
 
@@ -230,35 +291,95 @@ def ensure_private_dir(path: Path) -> None:
 def create_private_file_exclusive(path: Path, data: bytes) -> None:
     """Atomically create ``path`` with ``0o600`` and write ``data``.
 
-    Uses ``os.open(O_CREAT|O_EXCL|O_WRONLY, 0o600)`` then ``fdopen`` under a
-    cleared umask. Fails if the file already exists (``--init-baseline``).
-    Never create-then-chmod. Rejects symlink targets.
+    Uses ``os.open(O_CREAT|O_EXCL|O_WRONLY|O_NOFOLLOW, 0o600, dir_fd=...)``
+    under a parent pinned with ``O_DIRECTORY | O_NOFOLLOW``, then ``fdopen``
+    under a cleared umask. Fails if the file already exists
+    (``--init-baseline``). Never create-then-chmod. Rejects symlink targets;
+    the dirfd-relative open also closes the parent-swap TOCTOU window.
     """
     _reject_symlink(path)
     _reject_symlink(path.parent)
     prev = os.umask(0o077)
     try:
-        flags = os.O_CREAT | os.O_EXCL | os.O_WRONLY
-        try:
-            fd = os.open(str(path), flags, 0o600)
-        except FileExistsError as exc:
-            raise BaselineExists(f"baseline manifest already exists: {path}") from exc
-        except OSError as exc:
-            if exc.errno == errno.EEXIST:
-                raise BaselineExists(
-                    f"baseline manifest already exists: {path}"
-                ) from exc
-            raise
-        with os.fdopen(fd, "wb") as fh:
-            fh.write(data)
+        with _pinned_parent(
+            path.parent, f"refusing symlinked parent: {path.parent}"
+        ) as parent_fd:
+            flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC
+            )
+            try:
+                fd = os.open(path.name, flags, 0o600, dir_fd=parent_fd)
+            except FileExistsError as exc:
+                raise BaselineExists(f"baseline manifest already exists: {path}") from exc
+            except OSError as exc:
+                if exc.errno == errno.EEXIST:
+                    raise BaselineExists(
+                        f"baseline manifest already exists: {path}"
+                    ) from exc
+                raise
+            with os.fdopen(fd, "wb") as fh:
+                fh.write(data)
     finally:
         os.umask(prev)
 
 
 def read_private_file(path: Path) -> bytes:
-    """Read ``path`` bytes, rejecting symlink targets."""
+    """Read ``path`` bytes, rejecting symlink targets.
+
+    Kernel-grade: the parent directory is pinned with an
+    ``O_DIRECTORY | O_NOFOLLOW`` dirfd (via ``_pinned_parent``) and the
+    final component is opened dirfd-relative with ``O_NOFOLLOW``, so a
+    symlink swapped onto the parent (which the target-only
+    ``_reject_symlink`` pre-check never covered) cannot redirect the
+    read, and a symlink swapped onto the file itself fails
+    the open (ELOOP/ENOTDIR) instead of being followed; both are
+    translated to ``PermissionsError``. The parent-open guarantee and
+    its intermediate-ancestor residual are documented on
+    ``_pinned_parent``.
+    A file whose mode differs from 0600 is reset to 0600 on the read path
+    (best-effort fchmod on the fd), mirroring the directory helpers.
+    """
     _reject_symlink(path)
-    with open(str(path), "rb") as fh:
+    with _pinned_parent(
+        path.parent, f"refusing symlinked parent: {path.parent}"
+    ) as parent_fd:
+        try:
+            fd = os.open(
+                path.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise PermissionsError(
+                    f"refusing to follow symlink target: {path}"
+                ) from exc
+            raise
+    # Re-assert mode on every run (fd-based, mirroring the directory
+    # helpers): a legacy or restored file with a non-canonical mode is
+    # reset on the read path, never via a path-string chmod. Advisory
+    # (r2 F1): a refused fchmod (EROFS/EPERM) must NOT fail the read
+    # (stderr note only, never in any report), and the fd is closed on
+    # every failure path before fdopen takes ownership.
+    try:
+        st = os.fstat(fd)
+        if stat.S_IMODE(st.st_mode) != 0o600:
+            try:
+                os.fchmod(fd, 0o600)
+            except OSError as exc:
+                sys.stderr.write(
+                    f"warning: could not re-tighten mode of {path}"
+                    f" to 0600: {exc}\n"
+                )
+        fh = os.fdopen(fd, "rb")
+    except BaseException:
+        os.close(fd)
+        raise
+    with fh:
         return fh.read()
 
 
@@ -280,11 +401,24 @@ def telemetry_lock(telemetry_dir: Path) -> Iterator[None]:
     _reject_symlink(lock_path)
     prev = os.umask(0o077)
     try:
-        fd = os.open(
-            str(lock_path),
-            os.O_CREAT | os.O_RDWR,
-            0o600,
-        )
+        # The kernel symlink-refusal flag makes open fail with ELOOP on a
+        # symlinked final component, closing the pre-check-to-open race
+        # window; close-on-exec keeps the lock fd out of child processes.
+        # A raced ELOOP is translated to a friendly PermissionsError naming
+        # the lock path instead of surfacing a raw OSError traceback.
+        try:
+            fd = os.open(
+                str(lock_path),
+                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC,
+                0o600,
+            )
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                raise PermissionsError(
+                    f"telemetry lock path is a symlink "
+                    f"(possible tampering): {lock_path}"
+                ) from exc
+            raise
     finally:
         os.umask(prev)
     try:
@@ -1897,7 +2031,7 @@ def publish_with_recheck(
     publish_fn: Callable[[], None],
     *,
     retries: int = MAX_PUBLISH_RETRIES,
-) -> None:
+) -> int:
     """Recheck each input's on-disk generation against the buffer before publish.
 
     On the success path every published digest matches the byte buffer used for
@@ -1905,6 +2039,34 @@ def publish_with_recheck(
     up to ``retries`` times (re-reading the buffer); after that fail publication
     rather than publish a mixed-version snapshot. The caller's ``publish_fn``
     is invoked once per attempt after the recheck passes.
+
+    Load-bearing contract: on retry the ``buffers`` dict is refreshed IN PLACE
+    (existing keys re-read from disk) before ``publish_fn`` is invoked. A
+    ``publish_fn`` that writes bytes serialized before the recheck, ignoring
+    the refreshed ``buffers``, publishes a stale snapshot that still passes
+    this gate. Every caller MUST derive its published payload content from
+    the current ``buffers`` contents at invocation time (see the cohort
+    paragraph below for the one exception).
+
+    Cohort membership is the caller's concern and may be pinned to a
+    pre-publish ledger or snapshot (as ``cmd_strict_audit`` does): only
+    payload content must follow the refreshed buffers. Consequently a
+    caller that ignores the returned attempt count keeps its ledger-derived
+    summary and exit code pinned to the pre-publish ledger, which may lag
+    a retry-absorbed mutation, while the published report is rebuilt from
+    the refreshed buffers; callers that consume the attempt count (as
+    ``cmd_strict_audit`` does for its summary and exit code) recompute
+    ledger-derived state over the refreshed buffers. Cohort membership
+    itself stays ledger-pinned. New callers must pin the freshness
+    contract with a
+    selftest fixture modeled on the ``strict_audit_stale_snapshot`` family;
+    this gate cannot observe what ``publish_fn`` serialized.
+
+    Returns the attempt count: ``1`` when the first recheck passed (no
+    retry), ``N+1`` after ``N`` absorbed retries. Callers use this signal
+    to detect a retry-absorbed mutation and recompute ledger-derived state
+    over the refreshed buffers (as ``cmd_strict_audit`` does for its
+    ``replaced`` set); the ``classes=`` ledger summary stays ledger-pinned.
     """
     attempt = 0
     while True:
@@ -1922,7 +2084,7 @@ def publish_with_recheck(
                 break
         if not changed:
             publish_fn()
-            return
+            return attempt
         if attempt > retries:
             raise PublishRace(
                 f"input changed between read and publish after {retries} retries"
@@ -1989,29 +2151,64 @@ def cmd_refresh_baseline(
 
 
 def _atomic_write_private(path: Path, data: bytes) -> None:
-    """Atomically overwrite ``path`` (0o600) via temp file + rename."""
+    """Atomically overwrite ``path`` (0o600) via temp file + rename.
+
+    Kernel-grade: the parent is pinned with an ``O_DIRECTORY | O_NOFOLLOW``
+    dirfd; the temp file is created dirfd-relative with
+    ``O_CREAT | O_EXCL | O_NOFOLLOW`` at ``0600`` (never create-then-chmod)
+    and replaced into place with dirfd-relative ``os.replace``, so neither the
+    write nor the cleanup can be redirected by a symlink swapped into the
+    parent path after the pre-check. Rename-over-symlink at the target is
+    accepted-by-design (r2 F10): the write lands in the pinned parent and the
+    symlink is replaced, never followed.
+    """
     _reject_symlink(path)
     _reject_symlink(path.parent)
     prev = os.umask(0o077)
     try:
-        tmp_fd, tmp_name = tempfile.mkstemp(
-            dir=str(path.parent), prefix=".baseline-"
-        )
-        try:
-            with os.fdopen(tmp_fd, "wb") as fh:
-                fh.write(data)
-            os.chmod(tmp_name, 0o600)
-            os.replace(tmp_name, str(path))
-        except BaseException:
+        with _pinned_parent(
+            path.parent, f"refusing symlinked parent: {path.parent}"
+        ) as parent_fd:
+            target_name = path.name
+            create_flags = (
+                os.O_CREAT
+                | os.O_EXCL
+                | os.O_WRONLY
+                | os.O_NOFOLLOW
+                | os.O_CLOEXEC
+            )
+            # mkstemp cannot create dirfd-relative, so the temp name is minted
+            # here: pid + urandom keeps it unguessable; the bounded retry
+            # below guards a name clash.
+            tmp_base = f".baseline-{os.getpid()}-{os.urandom(4).hex()}"
+            tmp_name = tmp_base
+            counter = 0
+            while True:
+                try:
+                    tmp_fd = os.open(
+                        tmp_name, create_flags, 0o600, dir_fd=parent_fd
+                    )
+                    break
+                except FileExistsError:
+                    counter += 1
+                    if counter > 100:
+                        raise
+                    tmp_name = f"{tmp_base}-{counter}"
             try:
-                os.close(tmp_fd)
-            except OSError:
-                pass
-            try:
-                os.unlink(tmp_name)
-            except OSError:
-                pass
-            raise
+                with os.fdopen(tmp_fd, "wb") as fh:
+                    fh.write(data)
+                os.replace(
+                    tmp_name,
+                    target_name,
+                    src_dir_fd=parent_fd,
+                    dst_dir_fd=parent_fd,
+                )
+            except BaseException:
+                try:
+                    os.unlink(tmp_name, dir_fd=parent_fd)
+                except OSError:
+                    pass
+                raise
     finally:
         os.umask(prev)
 
@@ -2023,8 +2220,10 @@ def cmd_strict_audit(
     json_report: Path | None = None,
     markdown_report: Path | None = None,
 ) -> int:
-    """``--strict-audit``: read-only; fail when baseline missing/unreadable/
-    replaced/mismatched. Runs conservation classification and reports."""
+    """``--strict-audit``: read-only over sidecar content; normalizes
+    private-file modes to 0600/0700 (stderr warning if a tighten is refused);
+    fail when baseline missing/unreadable/replaced/mismatched. Runs
+    conservation classification and reports."""
     tighten_parent_ai_playbook(telemetry_dir.parent)
     with telemetry_lock(telemetry_dir):
         if not baseline_path.is_file():
@@ -2035,17 +2234,31 @@ def cmd_strict_audit(
         buffers = {s: read_byte_buffer(s) for s in sidecars}
         ledger, audit = run_conservation(sidecars, buffers, baseline)
 
-        # Strict audit: detect replacement/mismatch.
+        # Strict audit: detect replacement/mismatch. One local helper drives
+        # both the pre-race and the post-refresh computations (a verbatim
+        # second copy would drift after a one-sided edit).
         snapshot_by_path = {
             e["path"]: e for e in baseline.get("sidecars", [])
         }
-        replaced: list[str] = []
-        for sidecar in sidecars:
-            snap = snapshot_by_path.get(str(sidecar))
-            if snap is not None and snap.get("sha256") != sha256_hex(
-                buffers[sidecar]
-            ):
-                replaced.append(str(sidecar))
+
+        def _replaced_of(bufs: dict) -> list[str]:
+            replaced_paths: list[str] = []
+            for sidecar in sidecars:
+                snap = snapshot_by_path.get(str(sidecar))
+                if snap is not None and snap.get("sha256") != sha256_hex(
+                    bufs[sidecar]
+                ):
+                    replaced_paths.append(str(sidecar))
+            return replaced_paths
+
+        def _audit_of(bufs: dict) -> dict[str, list[str]]:
+            # Same conservation pass as the pre-race run at the top of the
+            # command, over caller-supplied buffers (r2 F3): the retry path
+            # re-derives the audit signals from the refreshed bytes.
+            _, audit_signals = run_conservation(sidecars, bufs, baseline)
+            return audit_signals
+
+        replaced = _replaced_of(buffers)
 
         # Build the effectiveness report over the classified corpus. Period
         # assignment: snapshot members (ledger baseline) are ``baseline``; growth
@@ -2053,39 +2266,90 @@ def cmd_strict_audit(
         # excluded from cohort comparison (no period assigned). Panel mode is not
         # a cohort key, so a baseline review and a growth review that differ only
         # in panel mode land in the same comparable cohort.
-        classified: list[tuple[str, dict]] = []
+        # Cohort membership contract: see the ``publish_with_recheck`` docstring.
         snapshot_paths = {
             entry["path"] for entry in baseline.get("sidecars", [])
         }
-        for sidecar in sidecars:
-            payload, _ = parse_payload(buffers[sidecar])
-            if payload is None:
-                continue
-            if str(sidecar) in snapshot_paths:
-                classified.append(("baseline", payload))
-            elif "growth" in ledger and sidecar in ledger["growth"]:
-                classified.append(("growth", payload))
-        report = build_effectiveness_report(classified)
-        # Private operability pointer (F4): if any sidecar was skipped as
-        # malformed (integrity assert in derive_size_bucket), note the count on
-        # stderr. Paths stay private (not emitted); the count is also in the
-        # report's availability.skipped_malformed.
-        skipped = report.get("availability", {}).get("skipped_malformed", 0)
-        if skipped:
-            sys.stderr.write(
-                f"strict audit: skipped {skipped} malformed sidecar(s); "
-                "see availability.skipped_malformed in the report\n"
-            )
-        report_bytes = serialize_effectiveness_json(report)
-        markdown_bytes = serialize_effectiveness_markdown(report)
+        def _classify_current() -> tuple[list[tuple[str, dict]], set[Path]]:
+            classified: list[tuple[str, dict]] = []
+            unparseable: set[Path] = set()
+            for sidecar in sidecars:
+                payload, _ = parse_payload(buffers[sidecar])
+                if payload is None:
+                    unparseable.add(sidecar)
+                    continue
+                if str(sidecar) in snapshot_paths:
+                    classified.append(("baseline", payload))
+                elif "growth" in ledger and sidecar in ledger["growth"]:
+                    classified.append(("growth", payload))
+            return classified, unparseable
 
         def _publish() -> None:
+            classified, unparseable_now = _classify_current()
+            report = build_effectiveness_report(classified)
+            # Operability pointer: surface the malformed-skip count from the
+            # rebuilt report and the retry-induced unparseable drop delta on
+            # stderr; paths stay private (not emitted). Set semantics: a
+            # sidecar unparseable at publish time counts only when it was
+            # NOT chronically unreadable at the initial classification (a
+            # member of ledger["unreadable"]). The earlier count
+            # subtraction masked the repaired-chronic-plus-fresh-drop
+            # window (backlog origin item 3): a repaired chronic sidecar
+            # and a fresh drop cancel out numerically while the set
+            # difference still catches the fresh drop. Chronic sidecars
+            # stay visible via the ledger-pinned classes= summary.
+            skipped = report.get("availability", {}).get("skipped_malformed", 0)
+            chronic = set(ledger["unreadable"])
+            retry_drops = unparseable_now - chronic
+            delta = len(retry_drops)
+            if skipped or retry_drops:
+                notes = []
+                if skipped:
+                    notes.append(f"skipped {skipped} malformed sidecar(s)")
+                if retry_drops:
+                    notes.append(
+                        f"dropped {delta} unparseable sidecar(s) (retry-induced)"
+                    )
+                # The report pointer names the malformed-skip counter only;
+                # parse-drops never reach the report, so a drop-only note
+                # stands alone.
+                pointer = (
+                    "; see availability.skipped_malformed in the report"
+                    if skipped
+                    else ""
+                )
+                sys.stderr.write(
+                    "strict audit: " + "; ".join(notes) + pointer + "\n"
+                )
+            report_bytes = serialize_effectiveness_json(report)
+            markdown_bytes = serialize_effectiveness_markdown(report)
             if json_report is not None:
                 _atomic_write_private(json_report, report_bytes)
             if markdown_report is not None:
                 _atomic_write_private(markdown_report, markdown_bytes)
 
-        publish_with_recheck(buffers, _publish)
+        attempts = publish_with_recheck(buffers, _publish)
+
+        # Retry-absorbed mutation: ``replaced`` and ``audit`` above were
+        # computed from the pre-race buffers while the published report was
+        # rebuilt from the refreshed ones. Recompute BOTH over the refreshed
+        # buffers so the exit code reflects what was actually published
+        # (r2 F3: a mutated growth sidecar has no snapshot entry, so only the
+        # audit signals can see it). Stay silent when the recompute changed
+        # nothing (a rewrite to digest-identical content leaves the summary
+        # unchanged and a note would be noise). The ``classes=`` ledger
+        # summary stays ledger-pinned (cohort membership contract, see the
+        # ``publish_with_recheck`` docstring).
+        if attempts > 1:
+            refreshed_replaced = _replaced_of(buffers)
+            refreshed_audit = _audit_of(buffers)
+            if refreshed_replaced != replaced or refreshed_audit != audit:
+                replaced = refreshed_replaced
+                audit = refreshed_audit
+                sys.stderr.write(
+                    "strict audit: retry-absorbed mutation; summary recomputed"
+                    " from refreshed buffers\n"
+                )
 
     anomalies = len(audit) + len(ledger["baseline-missing"]) + len(replaced)
     sys.stdout.write(
@@ -2680,6 +2944,411 @@ def _t_private_permissions(check) -> None:
             raised = True
         check("permissions: symlink target rejected", raised)
 
+        # Family-local refusal-expectation closure (review r2 F6): True iff
+        # fn raised PermissionsError with EXACTLY the expected message.
+        def _expect_refusal(fn, msg) -> bool:
+            try:
+                fn()
+            except PermissionsError as exc:
+                return str(exc) == msg
+            return False
+
+        # Characterization anchors (GREEN today via the _reject_symlink
+        # pre-check): the kernel-grade dirfd rewrite must keep refusing
+        # statically symlinked paths with the same message.
+        real_parent = td_path / "real-parent"
+        real_parent.mkdir()
+        parent_link = td_path / "parent-link"
+        os.symlink(real_parent, parent_link)
+        check(
+            "permissions: tighten_parent_ai_playbook refuses symlinked parent",
+            _expect_refusal(
+                lambda: tighten_parent_ai_playbook(parent_link),
+                f"refusing to follow symlink target: {parent_link}",
+            ),
+        )
+
+        real_dir = td_path / "real-dir"
+        real_dir.mkdir()
+        dir_link = td_path / "dir-link"
+        os.symlink(real_dir, dir_link)
+        check(
+            "permissions: ensure_private_dir refuses symlinked private dir",
+            _expect_refusal(
+                lambda: ensure_private_dir(dir_link),
+                f"refusing to follow symlink target: {dir_link}",
+            ),
+        )
+
+        real_target = tel / "real-target.json"
+        real_target.write_text("{}", encoding="utf-8")
+        target_link = tel / "target-link.json"
+        os.symlink(real_target, target_link)
+        check(
+            "permissions: _atomic_write_private refuses symlinked target",
+            _expect_refusal(
+                lambda: _atomic_write_private(target_link, b"{}"),
+                f"refusing to follow symlink target: {target_link}",
+            ),
+        )
+
+        real_parent2 = td_path / "real-parent2"
+        real_parent2.mkdir()
+        parent_link2 = td_path / "parent-link2"
+        os.symlink(real_parent2, parent_link2)
+        check(
+            "permissions: _atomic_write_private refuses symlinked parent",
+            _expect_refusal(
+                lambda: _atomic_write_private(parent_link2 / "baseline.json", b"{}"),
+                f"refusing to follow symlink target: {parent_link2}",
+            ),
+        )
+        read_target = tel / "read-target.json"
+        read_target.write_text("{}", encoding="utf-8")
+        os.chmod(str(read_target), 0o600)
+        read_link = tel / "read-link.json"
+        os.symlink(read_target, read_link)
+        check(
+            "permissions: read_private_file refuses symlinked file",
+            _expect_refusal(
+                lambda: read_private_file(read_link),
+                f"refusing to follow symlink target: {read_link}",
+            ),
+        )
+
+        # Static symlinked PARENT of the private dir (review r1 F1): the
+        # parent pre-check must refuse with the same contract even without
+        # a race (previously a raw NotADirectoryError escaped the parent
+        # dirfd open).
+        real_dir_p = td_path / "real-dir-parent"
+        real_dir_p.mkdir()
+        parent_link_dir = td_path / "parent-link-dir"
+        os.symlink(real_dir_p, parent_link_dir)
+        check(
+            "permissions: ensure_private_dir refuses symlinked parent",
+            _expect_refusal(
+                lambda: ensure_private_dir(parent_link_dir / "priv"),
+                f"refusing to follow symlink target: {parent_link_dir}",
+            ),
+        )
+
+        # Legacy loose-mode file re-tightened on the read path (review r1
+        # F3): a 0644 file read via read_private_file ends up 0600 (fd-based
+        # fstat/fchmod, mirroring the directory helpers' per-run re-assert).
+        legacy = tel / "legacy.json"
+        legacy.write_bytes(b"{}")
+        os.chmod(str(legacy), 0o644)
+        check(
+            "permissions: loose-mode legacy fixture starts 0644",
+            _file_mode(legacy) == 0o644,
+        )
+        read_private_file(legacy)
+        check(
+            "permissions: read_private_file re-tightens loose mode to 0600",
+            _file_mode(legacy) == 0o600,
+        )
+
+        # Advisory-refusal arm (review r4 F2): a refused re-tighten must NOT
+        # fail the read; the warning branch (stderr note naming the path) is
+        # the only production line of its kind and had no witness. Reached
+        # portably by monkeypatching os.fchmod to raise OSError for one call
+        # (family no-op-patch idiom; restored in finally), so the read
+        # proceeds with the mode still loose.
+        import contextlib
+        import io
+
+        refusal = tel / "refusal.json"
+        refusal.write_bytes(b'{"k": 1}')
+        os.chmod(str(refusal), 0o644)
+        orig_fchmod = os.fchmod
+        fchmod_calls = {"n": 0}
+
+        def _fail_first_fchmod(fd, mode):
+            if fchmod_calls["n"] == 0:
+                fchmod_calls["n"] += 1
+                raise OSError(errno.EPERM, "mode change refused")
+            return orig_fchmod(fd, mode)
+
+        os.fchmod = _fail_first_fchmod
+        try:
+            with contextlib.redirect_stderr(io.StringIO()) as refusal_err:
+                refusal_bytes = read_private_file(refusal)
+        finally:
+            os.fchmod = orig_fchmod
+        check(
+            "permissions: refused re-tighten still returns the file bytes",
+            refusal_bytes == b'{"k": 1}',
+        )
+        check(
+            "permissions: refused re-tighten warns on stderr naming the path",
+            "warning: could not re-tighten mode of" in refusal_err.getvalue()
+            and str(refusal) in refusal_err.getvalue(),
+        )
+
+        # Post-temp-creation failure arm (review r2 F5): a DIRECTORY at the
+        # target's final component lets the temp file be created but makes
+        # the dirfd-relative os.replace fail (rename onto a directory), so
+        # the except-cleanup is the only thing standing between the failure
+        # and a leaked temp file.
+        real_parent3 = td_path / "real-parent3"
+        real_parent3.mkdir()
+        (real_parent3 / "baseline.json").mkdir()
+        raised_oserror = False
+        try:
+            _atomic_write_private(real_parent3 / "baseline.json", b"{}")
+        except OSError:
+            raised_oserror = True
+        check(
+            "permissions: _atomic_write_private post-temp failure raises OSError",
+            raised_oserror,
+        )
+        residue_post_temp = [
+            p.name
+            for p in real_parent3.iterdir()
+            if p.name.startswith(".baseline-")
+        ]
+        check(
+            "permissions: post-temp failure leaves no temp residue",
+            residue_post_temp == [],
+        )
+
+        # Missing-parent arm (review r5 F3): the non-symlink errno branch of
+        # the parent dirfd open (r2 F2) had no witness. A missing parent
+        # (ENOENT) must surface as a fail-closed PermissionsError whose
+        # message is the accurate open-failure text naming the parent, not
+        # the symlink refusal text and not a raw OSError. tighten_parent_
+        # ai_playbook takes the parent itself; the other three take a child
+        # inside it. Message-predicate idiom (r4 advisory-refusal pattern).
+        missing_parent = td_path / "nope"
+
+        def _names_parent_only(msg) -> bool:
+            # Shared four-conjunct predicate (plan round 3, item 5; r1 F2
+            # hoist): the message must be the accurate open-failure text
+            # naming the PARENT, and a message naming the full child path
+            # (of which the parent string is a substring) fails. Trivially
+            # true for tighten_parent_ai_playbook, which takes no child.
+            return (
+                msg is not None
+                and "cannot open parent directory" in msg
+                and str(missing_parent) in msg
+                and str(missing_parent / "child") not in msg
+            )
+
+        for helper_name, helper_call in (
+            (
+                "tighten_parent_ai_playbook",
+                lambda: tighten_parent_ai_playbook(missing_parent),
+            ),
+            (
+                "ensure_private_dir",
+                lambda: ensure_private_dir(missing_parent / "child"),
+            ),
+            (
+                "create_private_file_exclusive",
+                lambda: create_private_file_exclusive(
+                    missing_parent / "child", b"{}"
+                ),
+            ),
+            (
+                "_atomic_write_private",
+                lambda: _atomic_write_private(
+                    missing_parent / "child", b"{}"
+                ),
+            ),
+        ):
+            msg = None
+            try:
+                helper_call()
+            except PermissionsError as exc:
+                msg = str(exc)
+            check(
+                f"permissions: {helper_name} missing parent fails closed "
+                "naming the parent",
+                _names_parent_only(msg),
+            )
+
+        # read_private_file missing-parent arm (plan round 3, item 5): its
+        # own check beside the shared loop, NOT a loop entry: before the
+        # round-3 manager rewrite a missing parent surfaced as a raw
+        # FileNotFoundError that would ESCAPE the loop's ``except
+        # PermissionsError`` and abort the whole family at run_selftest
+        # (RED, contained, at authoring time). Capturing
+        # (PermissionsError, OSError) keeps any failure contained; since
+        # the rewrite the parent-open refusal is the
+        # PermissionsError("cannot open parent directory: ...") message
+        # and the check passes.
+        msg = None
+        try:
+            read_private_file(missing_parent / "child")
+        except (PermissionsError, OSError) as exc:
+            msg = str(exc)
+        check(
+            "permissions: read_private_file missing parent fails closed "
+            "naming the parent",
+            _names_parent_only(msg),
+        )
+
+        # Pre-check-bypass arms (review r1 F2): with _reject_symlink patched
+        # to a no-op, the kernel flags (O_NOFOLLOW / O_DIRECTORY dirfd) are
+        # the only guard left, so these arms pin the kernel mechanism the
+        # characterization anchors above cannot see. Idiom mirrors the
+        # snapshot_races arm (d) for telemetry_lock; restore in finally.
+        import sys as _sys
+
+        this_mod = _sys.modules[__name__]
+        orig_reject = _reject_symlink
+        this_mod._reject_symlink = lambda p: None  # noqa: ARG001
+        try:
+            # read_private_file: symlinked final component -> the
+            # O_NOFOLLOW open fails (ELOOP) and the translation names it.
+            check(
+                "permissions: read_private_file kernel-refuses symlink "
+                "with pre-check disabled",
+                _expect_refusal(
+                    lambda: read_private_file(read_link),
+                    f"refusing to follow symlink target: {read_link}",
+                ),
+            )
+
+            # ensure_private_dir: symlinked final component under a real
+            # parent -> the dirfd-relative O_DIRECTORY|O_NOFOLLOW open
+            # fails (ENOTDIR on darwin, ELOOP on Linux) inside the
+            # translated errno tuple.
+            check(
+                "permissions: ensure_private_dir kernel-refuses symlink "
+                "with pre-check disabled",
+                _expect_refusal(
+                    lambda: ensure_private_dir(dir_link),
+                    f"private path is not a directory: {dir_link}",
+                ),
+            )
+
+            # create_private_file_exclusive / _atomic_write_private: with a
+            # symlinked FINAL component the kernel refuses via O_EXCL
+            # (EEXIST -> BaselineExists), so the discriminating bypass arm
+            # uses a symlinked PARENT: the parent dirfd open itself must
+            # fail closed with the r1 F1 translation naming the parent.
+            check(
+                "permissions: create_private_file_exclusive kernel-refuses "
+                "symlink with pre-check disabled",
+                _expect_refusal(
+                    lambda: create_private_file_exclusive(
+                        parent_link2 / "bl.json", b"{}"
+                    ),
+                    f"refusing symlinked parent: {parent_link2}",
+                ),
+            )
+
+            check(
+                "permissions: _atomic_write_private kernel-refuses symlink "
+                "with pre-check disabled",
+                _expect_refusal(
+                    lambda: _atomic_write_private(
+                        parent_link2 / "baseline.json", b"{}"
+                    ),
+                    f"refusing symlinked parent: {parent_link2}",
+                ),
+            )
+
+            # Pre-check-bypass arms (review r2 F4): the two matrix cells the
+            # r1 F2 arms left empty. (a) tighten_parent_ai_playbook has no
+            # other bypass arm: the O_NOFOLLOW parent open must fail closed
+            # on a symlinked parent with the ENOTDIR-family message.
+            check(
+                "permissions: tighten_parent_ai_playbook kernel-refuses "
+                "symlink with pre-check disabled",
+                _expect_refusal(
+                    lambda: tighten_parent_ai_playbook(parent_link),
+                    f"parent is not a directory: {parent_link}",
+                ),
+            )
+
+            # (b) ensure_private_dir's symlinked PARENT (final component
+            # real): the parent dirfd open must fail closed naming the
+            # parent.
+            check(
+                "permissions: ensure_private_dir kernel-refuses symlinked "
+                "parent with pre-check disabled",
+                _expect_refusal(
+                    lambda: ensure_private_dir(parent_link_dir / "priv"),
+                    f"refusing symlinked parent: {parent_link_dir}",
+                ),
+            )
+
+            # read_private_file symlinked ANCESTOR (plan round 3, item 2):
+            # the full-path O_NOFOLLOW open guarded only the final
+            # component, so with the pre-check disabled it FOLLOWED a
+            # symlinked ancestor directory and returned the bytes; RED
+            # until the pinned-parent manager landed (plan 2026-09-05,
+            # item 2). The arm exercises a depth-1 (immediate-parent)
+            # swap, refused by the O_NOFOLLOW on the parent open itself;
+            # deeper ancestors follow the r2 sibling contract (r1 F1).
+            anc_real = td_path / "real-anc"
+            anc_real.mkdir()
+            (anc_real / "target.json").write_text("{}", encoding="utf-8")
+            anc_link = td_path / "anc-link"
+            os.symlink(anc_real, anc_link)
+            check(
+                "permissions: read_private_file "
+                "kernel-refuses symlinked ancestor with pre-check disabled",
+                _expect_refusal(
+                    lambda: read_private_file(anc_link / "target.json"),
+                    f"refusing symlinked parent: {anc_link}",
+                ),
+            )
+
+            # Rename-over-symlink arm (review r2 F10): a symlinked FINAL
+            # target with the pre-check disabled is clobbered
+            # accepted-by-design: the write lands at the pinned path, the
+            # symlink is replaced (not followed), content is correct, and
+            # no temp residue remains.
+            clobber_payload = b'{"clobbered": true}'
+            _atomic_write_private(target_link, clobber_payload)
+            check(
+                "permissions: bypassed _atomic_write_private clobbers "
+                "target symlink at the pinned path",
+                not os.path.islink(str(target_link))
+                and target_link.read_bytes() == clobber_payload,
+            )
+            residue_clobber = [
+                p.name
+                for p in tel.iterdir()
+                if p.name.startswith(".baseline-")
+            ]
+            check(
+                "permissions: bypassed clobber leaves no temp residue",
+                residue_clobber == [],
+            )
+
+            # create_private_file_exclusive symlinked FINAL component (review
+            # r3 F1, retitled r4 F6): with the pre-check disabled, this arm
+            # is a characterization anchor, not a kernel discriminator: POSIX
+            # makes open(..., O_CREAT | O_EXCL, ...) fail with EEXIST on an
+            # existing symlink final component regardless of O_NOFOLLOW, so
+            # the refusal (-> BaselineExists) holds with or without the
+            # dirfd-relative open; the discriminating kernel cells for this
+            # helper are the symlinked-PARENT arms above. Pinned as-is: no
+            # creation through the link, symlink and target undisturbed.
+            attacker = td_path / "attacker"
+            attacker.mkdir()
+            steal = tel / "steal.json"
+            os.symlink(attacker / "stolen.json", steal)
+            baseline_refused = False
+            try:
+                create_private_file_exclusive(steal, b"{}")
+            except BaselineExists:
+                baseline_refused = True
+            check(
+                "permissions: create_private_file_exclusive "
+                "O_EXCL characterization: existing symlink final component "
+                "fails closed as BaselineExists",
+                baseline_refused
+                and not (attacker / "stolen.json").exists()
+                and os.path.islink(str(steal)),
+            )
+        finally:
+            this_mod._reject_symlink = orig_reject
+
 
 # ---- snapshot_races ----
 @_test("summarize_review_stats#snapshot_races")
@@ -2782,6 +3451,584 @@ def _t_snapshot_races(check) -> None:
         check(
             "snapshot_races: published digest matches parse buffer",
             captured.get("digest") == sha256_hex(read_byte_buffer(buf_path)),
+        )
+
+        # (c) static symlink at lock path rejected (characterization; GREEN
+        # today). Remove arm (a)'s leftover regular lock file first so the
+        # symlink create is not blocked by an occupied path.
+        lock_path = tel / LOCK_FILE_NAME
+        lock_path.unlink(missing_ok=True)
+        t2 = td_path / "t2"
+        t2.mkdir()
+        # Unguarded create on purpose: a guarded create would silently skip
+        # when the path is occupied, which is exactly the fixture hazard the
+        # unlink above removes.
+        os.symlink(t2 / "target", lock_path)
+        check("snapshot_races: static symlink occupies lock path", lock_path.is_symlink())
+        raised_c = False
+        try:
+            with telemetry_lock(tel):
+                pass
+        except PermissionsError:
+            raised_c = True
+        check(
+            "snapshot_races: static symlink at lock path rejected",
+            raised_c and not (t2 / "target").exists(),
+        )
+        lock_path.unlink()
+        check("snapshot_races: static symlink removed after rejection", not lock_path.exists())
+
+        # (d) symlink swap in race window fails closed with a friendly error
+        # (RED until the open's ELOOP is translated). Patch _reject_symlink
+        # to a no-op: this simulates the pre-check passing before the swap -
+        # the exact TOCTOU race window this arm pins. No sleeps or threads.
+        # The kernel ELOOP detail is intentionally replaced by the
+        # operator-facing message (PermissionsError extends Exception, not
+        # OSError, so the raw errno is lost by design).
+        evil = td_path / "evil"
+        evil.mkdir()
+        os.symlink(evil / "outside.lock", lock_path)
+        check("snapshot_races: swapped symlink occupies lock path", lock_path.is_symlink())
+        orig_reject = _reject_symlink
+
+        def _noop_reject(path: Path) -> None:  # noqa: ARG001
+            pass
+
+        this_mod._reject_symlink = _noop_reject
+        raised_d: PermissionsError | None = None
+        try:
+            with telemetry_lock(tel):
+                pass
+        except PermissionsError as exc:
+            raised_d = exc
+        finally:
+            this_mod._reject_symlink = orig_reject
+        check(
+            "snapshot_races: telemetry_lock translates a race-window symlink "
+            "swap into a friendly error",
+            raised_d is not None
+            and str(raised_d)
+            == f"telemetry lock path is a symlink (possible tampering): {lock_path}",
+        )
+        check(
+            "snapshot_races: symlink swap attack target not created",
+            not (evil / "outside.lock").exists(),
+        )
+        lock_path.unlink()
+        check("snapshot_races: lock path clean at family exit", not lock_path.exists())
+
+
+# ---- strict_audit_stale_snapshot ----
+@_test("summarize_review_stats#strict_audit_stale_snapshot")
+def _t_strict_audit_stale_snapshot(check) -> None:
+    import tempfile
+
+    # Isolate HOME so cmd_* (which resolve Path.home()/.ai-playbook) never
+    # touch the developer's REAL ~/.ai-playbook during the selftest.
+    orig_home = os.environ.get("HOME")
+    with tempfile.TemporaryDirectory() as home_tmp:
+        os.environ["HOME"] = home_tmp
+        try:
+            _stale_snapshot_inner(check)
+        finally:
+            if orig_home is None:
+                os.environ.pop("HOME", None)
+            else:
+                os.environ["HOME"] = orig_home
+
+
+def _stale_snapshot_inner(check) -> None:
+    import contextlib
+    import io
+    import sys as _sys
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as td:
+        td_path = Path(td)
+        facts = td_path / "facts.md"
+        facts.write_text(
+            f"| `personal_projects_root` | `{td_path}/myrepos/` | x |\n",
+            encoding="utf-8",
+        )
+        root = td_path / "myrepos"
+        repo = root / "r"
+        (repo / ".ai-playbook").mkdir(parents=True)
+        (repo / ".ai-playbook" / "facts.md").write_text(
+            '```toml\nreviews_dir = "docs/reviews/"\n```\n', encoding="utf-8"
+        )
+        sc = repo / "docs" / "reviews" / "x.stats.json"
+        # Bound once at the top of the family (r1 F3): the lag,
+        # both-counters, and no-report arms below re-use this path.
+        sc2 = repo / "docs" / "reviews" / "y.stats.json"
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        # Snapshot the original gen-1 bytes for the stale derivation below.
+        gen1_bytes = read_byte_buffer(sc)
+
+        tel = td_path / "review-telemetry"
+        bp = tel / "baseline.json"
+        tel.parent.mkdir(parents=True, exist_ok=True)
+        rc = cmd_init_baseline(facts, bp, tel)
+        check("strict_audit_stale_snapshot: init succeeds", rc == 0 and bp.is_file())
+
+        # First-call mutation hook: the FIRST publish_with_recheck invocation
+        # (which happens after the initial buffer read but before the first
+        # recheck) rewrites the on-disk sidecar; every invocation delegates
+        # to the real function.
+        p2 = _make_current_payload(["quality"])
+        p2["counts"]["raw_findings"] = 8  # size bucket 1-5 -> 6-15
+        this_mod = _sys.modules[__name__]
+        orig_pwr = publish_with_recheck
+
+        def _rewrite_on_first_call(rewrites: dict) -> Callable:
+            calls = {"n": 0}
+
+            def hooked(buffers, publish_fn, **kwargs):
+                if calls["n"] == 0:
+                    for path, new_payload in rewrites.items():
+                        if isinstance(new_payload, bytes):
+                            path.write_bytes(new_payload)
+                        else:
+                            _write_private_sidecar(path, new_payload)
+                calls["n"] += 1
+                return orig_pwr(buffers, publish_fn, **kwargs)
+
+            return hooked
+
+        def _audit_with_hook(rewrites: dict, out=None, md_out=None) -> tuple[int, str]:
+            """Run ``cmd_strict_audit`` with a first-call sidecar rewrite
+            hooked into ``publish_with_recheck``; return ``(rc, stderr)``.
+            Owns the module patch, stderr capture, and restore."""
+            this_mod.publish_with_recheck = _rewrite_on_first_call(rewrites)
+            try:
+                with contextlib.redirect_stderr(io.StringIO()) as err:
+                    rc_audit = cmd_strict_audit(
+                        facts, bp, tel, json_report=out, markdown_report=md_out
+                    )
+            finally:
+                this_mod.publish_with_recheck = orig_pwr
+            return rc_audit, err.getvalue()
+
+        def _read_or_empty(path):
+            return path.read_bytes() if path.is_file() else b""
+
+        def _skipped_malformed_of(path) -> object:
+            # Guarded parse of a published report's availability counter:
+            # a missing/invalid report or a non-dict availability block
+            # yields None instead of aborting the family.
+            availability: object = None
+            raw = _read_or_empty(path)
+            if raw:
+                try:
+                    availability = json.loads(raw.decode("utf-8")).get(
+                        "availability", {}
+                    )
+                except ValueError:
+                    availability = None
+            return (
+                availability.get("skipped_malformed")
+                if isinstance(availability, dict)
+                else None
+            )
+
+        out = td_path / "out-effectiveness.json"
+        md_out = td_path / "out-effectiveness.md"
+        audit_rc, first_err = _audit_with_hook({sc: p2}, out=out, md_out=md_out)
+        # The one-time change is absorbed by the bounded retry: no PublishRace.
+        # The recomputed summary now counts the mutated sidecar as replaced
+        # (plan round 2, Task 2): rc 1 plus the recomputed-summary note.
+        check(
+            "strict_audit_stale_snapshot: audit returns 1 after retry-absorbed mutation",
+            audit_rc == 1,
+        )
+        check(
+            "strict_audit_stale_snapshot: stderr names the recomputed summary",
+            "retry-absorbed mutation; summary recomputed" in first_err,
+        )
+
+        # Fresh expectation derived AFTER the call from the current on-disk
+        # sidecar (never by hand-editing observed output). One report, both
+        # serializations.
+        payload_now, _ = parse_payload(read_byte_buffer(sc))
+        fresh_report = build_effectiveness_report([("baseline", payload_now)])
+        fresh = serialize_effectiveness_json(fresh_report)
+        fresh_md = serialize_effectiveness_markdown(fresh_report)
+        payload_gen1, _ = parse_payload(gen1_bytes)
+        stale = serialize_effectiveness_json(
+            build_effectiveness_report([("baseline", payload_gen1)])
+        )
+        # Guarded read: a regression that fails the audit without writing the
+        # report must fail the check below, not abort the family with
+        # FileNotFoundError.
+        published = _read_or_empty(out)
+        # One combined predicate: the published bytes equal the fresh
+        # derivation AND differ from the gen-1 derivation. Pre-fix the stale
+        # bytes equal the gen-1 derivation (serializer is deterministic), so
+        # both halves are false.
+        check(
+            "strict_audit_stale_snapshot: published report matches recheck-verified input",
+            published == fresh and published != stale,
+        )
+        # Markdown half of the rebuild contract: both formats are serialized
+        # inside _publish from the rebuilt report, so the published markdown
+        # must equal the fresh derivation too (guarded like the JSON read).
+        published_md = _read_or_empty(md_out)
+        check(
+            "strict_audit_stale_snapshot: published markdown matches recheck-verified input",
+            published_md == fresh_md,
+        )
+
+        # Summary-lag arm (plan round 2, Task 1; repurposed r4 F3 to a
+        # distinct discriminator): re-baseline the sidecar (payload A on
+        # disk), then a fresh first-call hook rewrites it at the publish
+        # gate to a DIFFERENT valid payload B (raw_findings moved to the
+        # 16+ size bucket). Unlike the first arm (which pins the rc and
+        # stderr note alone), this arm pins the report-vs-ledger split: the
+        # PUBLISHED report is rebuilt from B (its cohort carries B's 16+
+        # size bucket, not A's), while the stdout ``classes=`` ledger
+        # summary line stays byte-identical to a hook-free baseline audit
+        # run over the same ledger (cohort membership is ledger-pinned).
+        # The recompute note check is kept: rc 1 plus the stderr note.
+        # Round 3, item 4 strengthening: a second valid sidecar (sc2,
+        # bound at the top of the family) joins the corpus before this
+        # re-init; see the discrimination comment at the classes= check
+        # below for why the rewrite moves it into would-be-unreadable.
+        _write_private_sidecar(sc2, _make_current_payload(["risk"]))
+        bp.unlink()
+        rc_init_lag = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init before summary-lag audit succeeds",
+            rc_init_lag == 0 and bp.is_file(),
+        )
+
+        def _classes_of(stdout_text: str) -> str:
+            # The ledger-derived ``classes=`` tail of the stdout summary
+            # line; empty string when the line is missing (fails both
+            # identity checks below rather than aborting the family).
+            for line in stdout_text.splitlines():
+                if "classes=" in line:
+                    return line.split("classes=", 1)[1]
+            return ""
+
+        with contextlib.redirect_stdout(io.StringIO()) as base_out:
+            _audit_with_hook({})
+        base_classes = _classes_of(base_out.getvalue())
+        p_b = _make_current_payload(["quality"])
+        p_b["counts"]["raw_findings"] = 25  # size bucket 6-15 -> 16+
+        out_lag = td_path / "out-lag-effectiveness.json"
+        with contextlib.redirect_stdout(io.StringIO()) as lag_out:
+            lag_rc, lag_err = _audit_with_hook(
+                {sc: p_b, sc2: b"{ not json"}, out=out_lag
+            )
+        check(
+            "strict_audit_stale_snapshot: summary-lag arm recomputes anomalies",
+            lag_rc == 1
+            and "retry-absorbed mutation; summary recomputed" in lag_err,
+        )
+        # Discrimination strengthened (plan round 3, item 4): the hook also
+        # moved sc2 (valid at init) into would-be-unreadable at the publish
+        # gate, so a refreshed-ledger regression now changes the tail via
+        # sc2; only the ledger-pinned implementation keeps it identical.
+        check(
+            "strict_audit_stale_snapshot: lag run classes= summary stays "
+            "ledger-pinned (identical to hook-free baseline run)",
+            base_classes != "" and _classes_of(lag_out.getvalue()) == base_classes,
+        )
+        # Report half of the split: the published report reflects payload
+        # B's bucket (16+), never payload A's (6-15, the on-disk sidecar at
+        # re-init time), because _publish serializes from the refreshed
+        # buffers. Guarded read; missing report fails the check.
+        lag_report = _read_or_empty(out_lag).decode("utf-8", "replace")
+        check(
+            "strict_audit_stale_snapshot: lag run published report reflects "
+            "payload B's size bucket, not the ledger-pinned payload A",
+            '"size_bucket": "16+"' in lag_report
+            and '"size_bucket": "6-15"' not in lag_report,
+        )
+        # Restore the single-sidecar corpus for the downstream arms
+        # (plan round 3, item 4): sc2 served the classes= discrimination
+        # above and is removed so every later arm's pinned expectations
+        # stay byte-identical to the single-sidecar corpus they were
+        # written against.
+        sc2.unlink()
+
+        # Malformed-at-retry arm: re-baseline the (now gen-2) sidecar, then a
+        # fresh first-call hook rewrites it at the publish gate to a payload
+        # that PARSES but violates the counts integrity assert
+        # (derive_size_bucket), so the refreshed buffer is skipped in the
+        # rebuilt report (availability.skipped_malformed) instead of silently
+        # crashing _publish or dropping the cohort without a signal.
+        p3 = _make_current_payload(["quality"])
+        p3["counts"]["raw_total"] = 99  # != raw_findings (1): integrity skip
+        bp.unlink()
+        rc_init2 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init after gen-2 mutation succeeds",
+            rc_init2 == 0 and bp.is_file(),
+        )
+
+        out2 = td_path / "out2-effectiveness.json"
+        audit_rc2, malformed_err = _audit_with_hook({sc: p3}, out=out2)
+        check("strict_audit_stale_snapshot: malformed-at-retry audit returns 1", audit_rc2 == 1)
+        check(
+            "strict_audit_stale_snapshot: malformed-at-retry stderr note carries count",
+            "skipped 1 malformed sidecar(s)" in malformed_err,
+        )
+        check(
+            "strict_audit_stale_snapshot: malformed-at-retry note carries report pointer",
+            "see availability.skipped_malformed in the report" in malformed_err,
+        )
+        skipped2 = _skipped_malformed_of(out2)
+        check(
+            "strict_audit_stale_snapshot: malformed-at-retry skipped in published report",
+            skipped2 == 1,
+        )
+
+        # Unparseable-at-retry arm: re-baseline the (now p3) sidecar back to
+        # a valid payload, then a fresh first-call hook rewrites it at the
+        # publish gate to bytes that do NOT parse. The sidecar must be
+        # dropped from the rebuilt report with a stderr note carrying the
+        # parse-drop count (the sole sidecar), not vanish silently.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        bp.unlink()
+        rc_init3 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init after integrity mutation succeeds",
+            rc_init3 == 0 and bp.is_file(),
+        )
+        out3 = td_path / "out3-effectiveness.json"
+        audit_rc3, unparseable_err = _audit_with_hook(
+            {sc: b"{ not json"}, out=out3
+        )
+        check(
+            "strict_audit_stale_snapshot: unparseable-at-retry audit returns 1",
+            audit_rc3 == 1,
+        )
+        check(
+            "strict_audit_stale_snapshot: unparseable-at-retry stderr note carries count",
+            "dropped 1 unparseable sidecar(s) (retry-induced)" in unparseable_err,
+        )
+        # Drop-only case: the note stands alone; the report pointer names
+        # the malformed-skip counter, which stays 0 for parse-drops.
+        check(
+            "strict_audit_stale_snapshot: unparseable-at-retry note has no report pointer",
+            "see availability.skipped_malformed" not in unparseable_err,
+        )
+        empty_report = serialize_effectiveness_json(build_effectiveness_report([]))
+        check(
+            "strict_audit_stale_snapshot: unparseable-at-retry report has no cohort",
+            _read_or_empty(out3) == empty_report,
+        )
+
+        # Both-counters arm: the hook rewrites one sidecar to the
+        # integrity-violating payload shape (skipped in the rebuilt report)
+        # and the other to unparseable bytes (dropped before
+        # classification), pinning the composed note and the disjointness
+        # of the two counters. The second sidecar re-uses the sc2 path
+        # (bound at the top of the family, unlinked after the lag arm);
+        # the write below is the re-assertion.
+        _write_private_sidecar(sc2, _make_current_payload(["risk"]))
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        bp.unlink()
+        rc_init4 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init with second sidecar succeeds",
+            rc_init4 == 0 and bp.is_file(),
+        )
+        p4 = _make_current_payload(["quality"])
+        p4["counts"]["raw_total"] = 99  # != raw_findings (1): integrity skip
+        out4 = td_path / "out4-effectiveness.json"
+        audit_rc4, both_err = _audit_with_hook(
+            {sc: p4, sc2: b"{ not json"}, out=out4
+        )
+        check(
+            "strict_audit_stale_snapshot: both-counters audit returns 1",
+            audit_rc4 == 1,
+        )
+        check(
+            "strict_audit_stale_snapshot: both-counters note carries both fragments",
+            "skipped 1 malformed sidecar(s)" in both_err
+            and "dropped 1 unparseable sidecar(s) (retry-induced)" in both_err,
+        )
+        # Expected derivation: the integrity-violating sidecar is skipped
+        # inside the report builder; the unparseable one is absent entirely.
+        fresh4 = serialize_effectiveness_json(
+            build_effectiveness_report([("baseline", p4)])
+        )
+        raw4 = _read_or_empty(out4)
+        skipped4 = _skipped_malformed_of(out4)
+        check(
+            "strict_audit_stale_snapshot: both-counters skipped 1, unparseable absent",
+            skipped4 == 1 and raw4 == fresh4,
+        )
+
+        # Report-path independence arm (plan Task 2): the note's emission
+        # stays independent of whether the report output paths are None.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        _write_private_sidecar(sc2, _make_current_payload(["risk"]))
+        bp.unlink()
+        rc_init5 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init before no-report audit succeeds",
+            rc_init5 == 0 and bp.is_file(),
+        )
+        audit_rc5, no_report_err = _audit_with_hook({sc: b"{ not json"})
+        check(
+            "strict_audit_stale_snapshot: no-report audit returns 1",
+            audit_rc5 == 1,
+        )
+        check(
+            "strict_audit_stale_snapshot: note fires without report paths",
+            "dropped 1 unparseable sidecar(s) (retry-induced)" in no_report_err,
+        )
+
+        # Chronic-unreadable arm (plan round 2, Task 3): a sidecar
+        # unparseable at the initial read (written BEFORE cmd_init_baseline,
+        # no hook mutation anywhere in the run) is a chronic condition, not
+        # retry-induced. The parse-drop note must NOT fire for it; the
+        # sidecar stays visible via the ledger-pinned classes= summary
+        # (unreadable=1) instead.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        sc_b = repo / "docs" / "reviews" / "b.stats.json"
+        sc_b.write_bytes(b"{ not json")
+        bp.unlink()
+        rc_init6 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init with chronic-unreadable sidecar succeeds",
+            rc_init6 == 0 and bp.is_file(),
+        )
+        with contextlib.redirect_stdout(io.StringIO()) as chronic_out_cap, \
+                contextlib.redirect_stderr(io.StringIO()) as chronic_err_cap:
+            chronic_rc = cmd_strict_audit(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: chronic-unreadable sidecar does not fire the parse-drop note",
+            chronic_rc == 0
+            and "unparseable sidecar(s)" not in chronic_err_cap.getvalue()
+            and "unreadable=1" in chronic_out_cap.getvalue(),
+        )
+
+        # Mask arm (plan round 3, item 3): the hook REPAIRS the chronic
+        # sidecar (sc_b -> valid) and simultaneously BREAKS the healthy
+        # one (sc -> unparseable) at the publish gate. Both refreshed
+        # buffers differ from their build_baseline snapshot digests (which
+        # cover every discovered sidecar, including the unparseable one),
+        # so the audit still exits 1. The pre-round-3 count subtraction
+        # (dropped 1 - chronic 1 == 0) masked this window and left the
+        # note silent (RED until the set-based retry-delta landed, plan
+        # 2026-09-05, item 3); the set-based retry-delta must fire with
+        # count 1.
+        # Re-assert sc2 parseable (both-counters idiom): the mask arm's
+        # exact dropped-1 count depends on it, not on earlier-arm state.
+        _write_private_sidecar(sc2, _make_current_payload(["risk"]))
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        sc_b.write_bytes(b"{ not json")  # chronic: unparseable before init
+        bp.unlink()
+        rc_init_mask = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init before mask arm succeeds",
+            rc_init_mask == 0 and bp.is_file(),
+        )
+        mask_repair = _make_current_payload(["risk"])
+        out_mask = td_path / "out-mask-effectiveness.json"
+        mask_rc, mask_err = _audit_with_hook(
+            {sc_b: mask_repair, sc: b"{ not json"}, out=out_mask
+        )
+        # Line-scoped guard (review r3 F3): the "skipped" exclusion must
+        # apply to the drop-notes line only, not the whole stderr, so an
+        # unrelated stderr line containing "skipped" cannot fail the arm.
+        notes_line = next(
+            (
+                line
+                for line in mask_err.splitlines()
+                if line.startswith("strict audit: dropped")
+            ),
+            "",
+        )
+        check(
+            "strict_audit_stale_snapshot: mask arm fires on repaired-chronic plus fresh drop",
+            mask_rc == 1
+            and "dropped 1 unparseable sidecar(s) (retry-induced)" in notes_line
+            and "skipped" not in notes_line,
+        )
+
+        # Silent-suppression arm (review r1 F6): the sidecar is mutated on
+        # disk BEFORE the audit (so the pre-race ``replaced`` already counts
+        # it), and the hook then rewrites it to yet another digest at the
+        # publish gate. The refreshed ``replaced`` set is unchanged, so the
+        # recomputed-summary note must stay silent (r3 F1 noise guard) even
+        # though the audit still exits 1 on the real replacement.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        bp.unlink()
+        rc_init7 = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init before silent-suppression audit succeeds",
+            rc_init7 == 0 and bp.is_file(),
+        )
+        p_pre = _make_current_payload(["quality"])
+        p_pre["counts"]["raw_findings"] = 8  # size bucket 1-5 -> 6-15
+        _write_private_sidecar(sc, p_pre)
+        p_post = _make_current_payload(["quality"])
+        p_post["counts"]["raw_findings"] = 25  # 6-15 -> 16-30: still replaced
+        silent_rc, silent_err = _audit_with_hook({sc: p_post})
+        check(
+            "strict_audit_stale_snapshot: pre-replaced sidecar still fails the audit",
+            silent_rc == 1,
+        )
+        check(
+            "strict_audit_stale_snapshot: unchanged replaced set stays note-silent",
+            "summary recomputed" not in silent_err,
+        )
+
+        # Growth-sidecar arm (review r2 F3): a sidecar created AFTER the
+        # last init (no baseline snapshot entry) is rewritten by the
+        # first-call hook to a payload carrying an out-of-family panel
+        # identity. ``_replaced_of`` cannot see it (snap is None), so only
+        # the recomputed AUDIT signals over the refreshed buffers can:
+        # pre-fix the exit code stays 0 while the report already reflects
+        # the mutated content.
+        sc_g = repo / "docs" / "reviews" / "g.stats.json"
+        _write_private_sidecar(sc_g, _make_current_payload(["quality"]))
+        p_g = _make_current_payload(["quality"])
+        p_g["panel"].append(
+            {
+                "worker": "bogus-out-of-family",
+                "status": "complete",
+                "raw": 0,
+                "solo": 0,
+                "echo": 0,
+            }
+        )
+        growth_rc, growth_err = _audit_with_hook({sc_g: p_g})
+        check(
+            "strict_audit_stale_snapshot: growth-sidecar mutation recomputes audit signals",
+            growth_rc == 1
+            and "retry-absorbed mutation; summary recomputed" in growth_err,
+        )
+
+        # Attempts signal (plan round 2, Task 1): publish_with_recheck must
+        # return the attempt count so callers can detect retry-absorbed
+        # mutations. Clean publish (no mutation) reports one attempt; a
+        # first-call sidecar rewrite absorbed by the bounded retry reports
+        # two attempts.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        clean_buffers = {sc: read_byte_buffer(sc)}
+        clean_attempts = orig_pwr(clean_buffers, lambda: None)
+        check(
+            "strict_audit_stale_snapshot: clean publish reports one attempt",
+            clean_attempts == 1,
+        )
+        p_other = _make_current_payload(["quality"])
+        p_other["counts"]["raw_findings"] = 40  # size bucket 1-5 -> 31-50
+        retry_buffers = {sc: read_byte_buffer(sc)}
+        this_mod.publish_with_recheck = _rewrite_on_first_call({sc: p_other})
+        try:
+            retry_attempts = this_mod.publish_with_recheck(
+                retry_buffers, lambda: None
+            )
+        finally:
+            this_mod.publish_with_recheck = orig_pwr
+        check(
+            "strict_audit_stale_snapshot: retry-absorbed publish reports two attempts",
+            retry_attempts == 2,
         )
 
 
@@ -4115,6 +5362,7 @@ _SUBSET_OF: dict[str, str] = {
     "summarize_review_stats#conservation_shape_drift": "conservation",
     "summarize_review_stats#private_manifest": "conservation",
     "summarize_review_stats#baseline_lifecycle": "lifecycle",
+    "summarize_review_stats#strict_audit_stale_snapshot": "lifecycle",
     "summarize_review_stats#private_permissions": "permissions",
     "summarize_review_stats#snapshot_races": "permissions",
     "summarize_review_stats#current_adapter": "aggregation",
@@ -4204,7 +5452,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--strict-audit",
         action="store_true",
-        help="read-only strict conservation audit (fails on baseline problems)",
+        help="read-only strict conservation audit over sidecar content; "
+        "normalizes private-file modes to 0600/0700 (stderr warning if a "
+        "tighten is refused); fails on baseline problems",
     )
     parser.add_argument("--json-report", type=Path, default=None)
     parser.add_argument("--markdown-report", type=Path, default=None)

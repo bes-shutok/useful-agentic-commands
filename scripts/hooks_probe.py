@@ -25,7 +25,13 @@ Wiring = Literal["NONE", "DEGRADED", "FULL"]
 ExpectedTier = Literal["FULL", "DEGRADED", "UNSUPPORTED"]
 
 #: Frozen steady-state tiers (plan Gist table). Selftest ``frozen_agents_listed``
-#: pins these values.
+#: pins these values. Invariant: an UNSUPPORTED ``plan-readiness`` tier asserts
+#: "no adapter implemented (unwired by scope)" — while a row stays UNSUPPORTED,
+#: no adapter for that agent may exist on disk. The probe itself cannot detect
+#: a wired-but-unflipped adapter (the UNSUPPORTED early return is by design);
+#: keeping rows truthful when adapters are wired is process discipline carried
+#: by the wiring recipe in agents/hooks/plan-readiness/README.md, not a probe
+#: property.
 PROBE_MATRIX: list[tuple[str, str, ExpectedTier]] = [
     ("Claude", "lessons-recall", "FULL"),
     ("Claude", "skill-gate", "FULL"),
@@ -35,6 +41,10 @@ PROBE_MATRIX: list[tuple[str, str, ExpectedTier]] = [
     ("agy", "skill-gate", "FULL"),
     ("Cursor", "lessons-recall", "DEGRADED"),
     ("Cursor", "skill-gate", "FULL"),
+    ("Claude", "plan-readiness", "UNSUPPORTED"),
+    ("Codex", "plan-readiness", "UNSUPPORTED"),
+    ("agy", "plan-readiness", "UNSUPPORTED"),
+    ("Cursor", "plan-readiness", "UNSUPPORTED"),
 ]
 
 #: Adapter symlink paths per (agent, hook).
@@ -255,6 +265,16 @@ def _probe_one(
     expected: ExpectedTier,
     home: Path | None = None,
 ) -> ProbeResult:
+    # An expected UNSUPPORTED tier resolves BEFORE any adapter-symlink dict
+    # lookup or existence check: UNSUPPORTED capabilities ship no adapter, so
+    # the missing dict entry (KeyError) or absent symlink must not turn the
+    # honest steady state into FAIL. Pinned by the
+    # ``unsupported_without_symlink`` selftest fixture.
+    if expected == "UNSUPPORTED":
+        return ProbeResult(
+            agent, hook, "UNSUPPORTED", "no adapter implemented (unwired by scope)", expected
+        )
+
     symlink_raw = _ADAPTER_SYMLINKS[(agent, hook)]
     symlink_path = _expand(symlink_raw, home)
     sym, sym_detail = _symlink_state(symlink_path)
@@ -272,9 +292,6 @@ def _probe_one(
 
     wiring = _assess_wiring(agent, hook, home or Path.home())
     ceiling = _product_ceiling(agent, hook)
-
-    if expected == "UNSUPPORTED":
-        return ProbeResult(agent, hook, "UNSUPPORTED", "not supported by product", expected)
 
     if _codex_skill_gate_symlink_only(agent, hook, wiring, sym):
         detail = "adapter present; blocking pre_tool_use unwired (steady state)"
@@ -394,11 +411,39 @@ def selftest(argv: list[str] | None = None) -> int:
         expected_by_key.get(("Cursor", "skill-gate")) == "FULL",
         repr(expected_by_key.get(("Cursor", "skill-gate"))),
     )
+    plan_readiness_tiers = {
+        a: tier for a, h, tier in PROBE_MATRIX if h == "plan-readiness"
+    }
+    # Derived from the single ``agents`` literal checked above (no re-hardcoded
+    # four-agent copy): plan-readiness must cover the SAME agent set as the
+    # wired hooks and be UNSUPPORTED for every one of them.
     check(
-        "frozen_agents_listed: eight (agent, hook) cells",
-        len(PROBE_MATRIX) == 8,
+        "frozen_agents_listed: plan-readiness expected UNSUPPORTED for every agent",
+        set(plan_readiness_tiers) == agents
+        and all(tier == "UNSUPPORTED" for tier in plan_readiness_tiers.values()),
+        repr(sorted(plan_readiness_tiers.items())),
+    )
+    check(
+        "frozen_agents_listed: twelve (agent, hook) cells",
+        len(PROBE_MATRIX) == 12,
         str(len(PROBE_MATRIX)),
     )
+
+    # ------------------------------------------------------------------ #
+    # unsupported_without_symlink: an expected UNSUPPORTED capability has no
+    # adapter symlink (and no _ADAPTER_SYMLINKS entry); the probe must resolve
+    # UNSUPPORTED, not FAIL, so --all exits 0 while the limitation stays
+    # recorded. Pins the _probe_one ordering: UNSUPPORTED resolves BEFORE any
+    # adapter-symlink dict lookup or existence check.
+    # ------------------------------------------------------------------ #
+    with tempfile.TemporaryDirectory() as td:
+        home = Path(td)
+        result = _probe_one("Claude", "plan-readiness", "UNSUPPORTED", home=home)
+        check(
+            "unsupported_without_symlink: expected UNSUPPORTED, no adapter -> UNSUPPORTED (not FAIL)",
+            result.status == "UNSUPPORTED",
+            f"{result.status} {result.detail!r}",
+        )
 
     # ------------------------------------------------------------------ #
     # detects_symlink_dangle: dangling adapter symlink -> FAIL.

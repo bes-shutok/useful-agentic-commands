@@ -7,10 +7,13 @@ Exit 0 when valid (soft mode may print warnings). Exit 1 when invalid in --hard 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
+import io
 import json
 import re
 import sys
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -98,13 +101,24 @@ V1_REQUIRED_TOP_LEVEL_FIELDS = (
     "overflow",
     "soften_watchlist",
 )
-V1_OPTIONAL_TOP_LEVEL_FIELDS = ("depth", "domains", "extensions")
+# Optional version-1 top-level fields with documented types: ``depth`` string,
+# ``domains`` list, ``verdict`` string ``yes``/``no``, ``extensions`` object.
+V1_OPTIONAL_TOP_LEVEL_FIELDS = ("depth", "domains", "verdict", "extensions")
 # r6 F8: version-1 ``date`` is a shape-checked string (calendar validity is
 # out of scope; the documented contract is the format). ``\Z`` (not ``$``)
 # so a trailing newline cannot slip through, ASCII-only ``[0-9]`` so
 # Unicode decimal digits cannot pass (r1 F1).
 V1_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+# Sibling compat handshake contract: consumers of this module pair against
+# the COMPAT_VERSION value they shipped with; bump it ONLY together with
+# every consumer's expected constant.
+COMPAT_VERSION = 1
 SUPPORTED_SIDECAR_SCHEMA_VERSIONS = (1,)
+# Single declaration of the conforming verdict vocabulary (version-1 sidecar
+# ``verdict`` field). Consumers (e.g. scripts/plan_readiness.py
+# ``sidecar_verdict``) import this tuple so the yes/no membership rule
+# exists exactly once.
+VERDICT_VALUES = ("yes", "no")
 # Worker statuses that count as a launch toward the six-worker ceiling but
 # NEVER as completed coverage for full-panel completion.
 INCOMPLETE_WORKER_STATUSES = frozenset({"failed", "timed-out"})
@@ -397,16 +411,17 @@ def classify_with_fallback(
 
     Contract (r6 F3 partial fallback): the first pass is the default
     content-preserving ``classify_fence_lines`` run over ALL lines. When every
-    fence closed, ``reset_events`` is ``None`` and ``unclosed_opener`` is
-    ``None``. When a fence never closed, the first pass is trustworthy only up
-    to its opener: the suffix ``lines[unclosed_opener:]`` is re-classified with
-    ``is_reset_heading`` (heading-reset mode) and returned as
-    ``reset_events``; consumers keep the pre-opener first-pass results and
-    interpret the suffix from the re-classified events (index-based consumers
-    remap suffix indices with ``unclosed_opener + i``; order-based consumers
-    apply the events directly). The helper owns only this two-pass
-    orchestration — it REUSES ``classify_fence_lines`` and never re-implements
-    fence tracking.
+    fence closed, ``reset_events`` is ``None``, ``unclosed_opener`` is
+    ``None``, and the first element is the FULL first-pass event list. When a
+    fence never closed, the first pass is trustworthy only up to its opener,
+    so the helper itself returns only the pre-opener prefix of the first-pass
+    events as the first element (consumers apply it directly, with no
+    truncation or filtering of their own); the suffix from the opener onward
+    is re-classified with ``is_reset_heading`` (heading-reset mode) and
+    returned as ``reset_events`` (index-based consumers remap suffix indices
+    with the opener offset; order-based consumers apply the events directly).
+    The helper owns only this two-pass orchestration — it REUSES
+    ``classify_fence_lines`` and never re-implements fence tracking.
 
     ``is_reset_heading`` is a required positional argument, unlike the
     classifier's keyword-only optional predicate. The classifier runs both
@@ -425,15 +440,28 @@ def classify_with_fallback(
         lines[unclosed_opener:],
         is_reset_heading=is_reset_heading,
     )
-    return events, unclosed_opener, reset_events
+    return events[:unclosed_opener], unclosed_opener, reset_events
+
+
+def extract_findings_section(content: str) -> str | None:
+    """Return the ``## Findings`` section body, or ``None`` when absent.
+
+    Shared section-extraction prelude for the two Findings consumers
+    (``split_finding_blocks`` and ``parse_markdown_findings``): the section
+    body runs from the end of the Findings heading to the next level-2
+    heading (or the end of the document).
+    """
+    findings_match = re.search(r"^## Findings\s*$", content, re.MULTILINE)
+    if not findings_match:
+        return None
+    findings_section = content[findings_match.end() :]
+    return re.split(r"\n## ", findings_section, maxsplit=1)[0]
 
 
 def split_finding_blocks(content: str) -> list[str]:
-    findings_match = re.search(r"^## Findings\s*$", content, re.MULTILINE)
-    if not findings_match:
+    findings_section = extract_findings_section(content)
+    if findings_section is None:
         return []
-    findings_section = content[findings_match.end() :]
-    findings_section = re.split(r"\n## ", findings_section, maxsplit=1)[0]
     # Legacy findings use "### 1." or "### F1". Current grouped findings use
     # severity headings plus "#### F1." entries.
     # r5 F8: the current-format split is fence-aware. A ``#### F<N>.`` line
@@ -460,13 +488,12 @@ def split_finding_blocks(content: str) -> list[str]:
     )
     boundaries = boundary_indices(events)
     if reset_events is not None:
-        # Partial fallback (r6 F3): a fence never closed, so the
-        # content-preserving first pass is trustworthy only up to the opener.
-        # Keep those boundaries and re-classify from the opener onward with
+        # Partial fallback (r6 F3): a fence never closed, so
+        # ``classify_with_fallback`` already truncated the first-pass events
+        # to the pre-opener prefix. Re-classify from the opener onward with
         # heading resets restricted to finding-header lines (the splitter's
         # reset heading set), so the unclosed fence cannot swallow later
         # findings (r4 F3) and pre-opener fenced examples stay content.
-        boundaries = [i for i in boundaries if i < unclosed_opener]
         boundaries += [
             unclosed_opener + i for i in boundary_indices(reset_events)
         ]
@@ -490,7 +517,9 @@ def split_finding_blocks(content: str) -> list[str]:
     return blocks
 
 
-def parse_markdown_findings(content: str) -> list[dict]:
+def parse_markdown_findings(
+    content: str, warn: Callable[[str], None] | None = None
+) -> list[dict]:
     """Parse current-format Markdown findings into ``{id, severity, blocking,
     triage, pattern}`` dicts, one per ``#### F<N>.`` block.
 
@@ -506,14 +535,16 @@ def parse_markdown_findings(content: str) -> list[dict]:
     are the common ones), and fenced code blocks are skipped, so quoted or
     example bullets in body prose cannot overwrite the parsed fields. Used by
     the Markdown/sidecar conservation cross-check.
+
+    The parser is side-effect free (no printing, no stderr writes): the
+    unclosed-fence fallback warning is surfaced through the optional ``warn``
+    callback, which receives the message once per parsing pass of the
+    Findings section; ``None`` (the default) means fully silent.
     """
-    findings_match = re.search(r"^## Findings\s*$", content, re.MULTILINE)
-    if not findings_match:
+    findings_section = extract_findings_section(content)
+    if findings_section is None:
         return []
-    findings_section = content[findings_match.end() :]
-    findings_section = re.split(r"\n## ", findings_section, maxsplit=1)[0]
     parsed: list[dict] = []
-    current_severity: str | None = None
     current: dict | None = None
     # r3 F2: metadata bullets are read ONLY between the finding header and the
     # first level-four sub-heading of any name (Comment and Analysis are the
@@ -614,21 +645,34 @@ def parse_markdown_findings(content: str) -> list[dict]:
     scanned: list[dict] = []
     if reset_events is None:
         cur, _, _ = apply_events(
-            events, scanned, None, current_severity, False
+            events, scanned, None, None, False
         )
     else:
         # Partial fallback (r6 F3): the content-preserving first pass is
-        # trustworthy only up to the opener, so apply ONLY the pre-opener
-        # prefix of its events (never the full list). Re-derive the state at
-        # the opener from that prefix, flush the finding open at the opener
-        # with its PRE-opener bullets (no double-append), and re-scan from
-        # the opener with heading resets seeded with that state (severity
-        # label, metadata-region flag) so same-group later findings parse
-        # with their true severity (r4 F3 containment; post-opener bullets
-        # are inside the unclosed fence and are not recovered, same as the
-        # old full-discard behavior).
+        # trustworthy only up to the opener, and ``classify_with_fallback``
+        # already truncated its events to the pre-opener prefix, so apply
+        # them directly. Re-derive the state at the opener from that prefix,
+        # flush the finding open at the opener with its PRE-opener bullets
+        # (no double-append), and re-scan from the opener with heading resets
+        # seeded with that state (severity label, metadata-region flag) so
+        # same-group later findings parse with their true severity (r4 F3
+        # containment; post-opener bullets are inside the unclosed fence and
+        # are not recovered, same as the old full-discard behavior).
+        if warn is not None:
+            warn(
+                "warning: unclosed code fence in the Findings section (opener "
+                f"at line {unclosed_opener + 1} of the Findings section); "
+                "findings after the opener are recovered with heading "
+                "resets, but post-opener metadata bullets are not recovered; "
+                "this warning repeats once per parsing pass of the Findings "
+                "section, so a full validation run may "
+                "print it more than once"
+            )
+        # Both apply_events call sites seed the severity from literal None:
+        # state is re-derived inside apply_events. The reset pass below seeds
+        # from cur_severity, which is different state and stays.
         cur, cur_severity, metadata_open = apply_events(
-            events[:unclosed_opener], scanned, None, current_severity, False
+            events, scanned, None, None, False
         )
         if cur is not None:
             scanned.append(cur)
@@ -911,26 +955,36 @@ def validate_version1_payload(
     # reported here. ``source_kind`` stays out of the tuple: its membership
     # gate in ``validate_current_payload`` already rejects hashable mistyped
     # values and a second gate would double-report them.
-    for field_name in (
-        "review_type",
-        "artifact_slug",
-        "date",
-        "selection_reason",
-        "escalation_reason",
-    ):
-        value = payload.get(field_name)
-        if value is None:
-            continue  # null: reported by the r5 F1 gate for the three required scalars; legal not-applicable form for the enum-reason pair (see block comment above)
+    # The None contract differs per group, so the widened tuple is split into
+    # two loops sharing one error-emitting body (``_gate_v1_scalar`` below):
+    # both loops skip ``None``, but for different documented reasons.
+
+    def _gate_v1_scalar(field_name: str, value) -> None:
         if not isinstance(value, str):
             result.add_error(
                 f"version-1 sidecar field {field_name!r} must be a string"
             )
-            continue
+            return
         if field_name == "date" and not V1_DATE_RE.match(value):
             result.add_error(
                 "version-1 sidecar field 'date' must be a string in YYYY-MM-DD "
                 "format"
             )
+
+    # None -> r5 F1 sole reporter: the null gate above is the single reporter
+    # for explicit-null required scalars, so this loop skips ``None``.
+    for field_name in ("review_type", "artifact_slug", "date"):
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        _gate_v1_scalar(field_name, value)
+    # None legal (r5 F1 carve-out): null is the documented not-applicable
+    # form for the enum-reason pair, so only present non-strings report here.
+    for field_name in ("selection_reason", "escalation_reason"):
+        value = payload.get(field_name)
+        if value is None:
+            continue
+        _gate_v1_scalar(field_name, value)
     # v1-gate-trio: ``round`` is dual-typed by contract (string or integer;
     # review-staging SKILL.md contract table). bool is excluded explicitly
     # because True is an int subclass in Python; the None skip keeps the r5 F1
@@ -952,6 +1006,10 @@ def validate_version1_payload(
             result.add_error(
                 f"version-1 sidecar field {field_name!r} must be {type_name}"
             )
+    # Verdict gate: an explicit null is REJECTED (a round always has a
+    # verdict, and null would blur absent-fallback semantics).
+    if "verdict" in payload and payload["verdict"] not in VERDICT_VALUES:
+        result.add_error("version-1 sidecar field 'verdict' must be 'yes' or 'no'")
     allowed = set(V1_REQUIRED_TOP_LEVEL_FIELDS) | set(V1_OPTIONAL_TOP_LEVEL_FIELDS)
     for key in payload:
         if key not in allowed:
@@ -1008,7 +1066,7 @@ def validate_version1_payload(
     # than its sidecar entry.
     md_by_id = {
         f["id"]: f
-        for f in parse_markdown_findings(content)
+        for f in parse_markdown_findings(content, warn=result.add_warning)
         if isinstance(f.get("id"), int)
     }
     for finding in v1_findings:
@@ -1196,7 +1254,10 @@ def validate_current_payload(
     # the validator) activates the 64-hex syntax check and the freshness
     # comparison.
     declared_kind = payload.get("source_kind")
-    if declared_kind is not None and declared_kind not in VALID_SOURCE_KINDS:
+    if declared_kind is not None and (
+        not isinstance(declared_kind, str)
+        or declared_kind not in VALID_SOURCE_KINDS
+    ):
         result.add_error(
             f"current sidecar source_kind must be one of "
             f"{sorted(VALID_SOURCE_KINDS)}; got {declared_kind!r}"
@@ -1287,6 +1348,16 @@ def validate_current_payload(
     # ``valid_rows`` membership (equal ids at one severity are sort-safe for
     # the frozen order-check sort key), so no membership logic changes.
     seen_ids: set = set()
+    # r6 additional item (cross-severity duplicates): ids the duplicate gate
+    # flagged. The conservation reconciliation keys its Markdown lookup by id
+    # (last-match-wins), so two agreeing rows sharing an id at different
+    # severities would otherwise pair the first sidecar row with the last
+    # Markdown row and fire a false severity disagreement. Flagged ids are
+    # passed to the reconciliation, which suppresses their per-id comparison
+    # (the duplicate gate is the single reporter for those rows). This is
+    # deliberately NOT a (id, severity) reconciliation key — that alternative
+    # would emit a no-matching-block double-report for the first row.
+    duplicate_flagged_ids: set = set()
     for i, finding in enumerate(findings):
         if not isinstance(finding, dict):
             result.add_error("current finding must be an object")
@@ -1328,6 +1399,7 @@ def validate_current_payload(
                 result.add_error(
                     f"current finding {display} duplicate id"
                 )
+                duplicate_flagged_ids.add(fid)
             else:
                 seen_ids.add(fid)
         else:
@@ -1418,7 +1490,9 @@ def validate_current_payload(
     _require_array(payload, "soften_watchlist", result, schema_label)
 
     validate_markdown_severity_groups(content, result)
-    validate_finding_conservation(content, payload, result)
+    validate_finding_conservation(
+        content, payload, result, duplicate_flagged_ids
+    )
 
 
 def validate_finding_order(findings: list, result: ValidationResult) -> None:
@@ -1496,7 +1570,10 @@ def validate_finding_budget(findings: list, result: ValidationResult) -> None:
 
 
 def validate_finding_conservation(
-    content: str, payload: dict, result: ValidationResult
+    content: str,
+    payload: dict,
+    result: ValidationResult,
+    duplicate_flagged_ids: set,
 ) -> None:
     """Reconcile Markdown findings with sidecar findings.
 
@@ -1505,11 +1582,16 @@ def validate_finding_conservation(
     ``counts.staged_findings`` it must equal the same number; and per-finding
     id, severity, blocking, and triage must agree between Markdown and sidecar.
     Disagreement is a hard conservation error.
+
+    ``duplicate_flagged_ids`` carries ids the duplicate-id gate already
+    reported: the per-id comparison is suppressed for them (the id-keyed
+    Markdown lookup is last-match-wins and cannot meaningfully compare
+    collapsed rows; the duplicate gate is the single reporter).
     """
     sidecar_findings = payload.get("findings") or []
     if not isinstance(sidecar_findings, list):
         return
-    md_findings = parse_markdown_findings(content)
+    md_findings = parse_markdown_findings(content, warn=result.add_warning)
     # Only apply when at least one side signals current-format findings.
     if not md_findings and not sidecar_findings:
         return
@@ -1534,6 +1616,14 @@ def validate_finding_conservation(
         if not isinstance(sc, dict):
             continue
         sid = sc.get("id")
+        # r6 additional item: suppress the per-id comparison for ids the
+        # duplicate gate already flagged (single reporter; avoids the
+        # last-match-wins false severity disagreement and any
+        # no-matching-block double-report). This also suppresses the r6 F1
+        # blocking-conservation arm for flagged ids; the run still fails
+        # hard via the duplicate-id error itself.
+        if isinstance(sid, int) and sid in duplicate_flagged_ids:
+            continue
         if not isinstance(sid, int) or sid not in md_by_id:
             result.add_error(
                 f"finding conservation: sidecar finding id {sid!r} has no "
@@ -2444,12 +2534,24 @@ def _selftest_current_contract(root: Path, check) -> None:
     # validation run is caught (result None) so the RED phase records FAIL
     # instead of aborting the whole selftest suite.
     def _run_id_fixture(
-        slug: str, title: str, mutate, errors_ok, label: str
+        slug: str,
+        title: str,
+        errors_ok,
+        label: str,
+        mutate=None,
+        mutate_early=None,
+        row_count: int = 2,
     ) -> None:
-        two = [_current_finding(id=1), _current_finding(id=2)]
-        md = _current_findings_markdown(two, title=title)
-        fixture_payload = _payload_with_findings(two)
-        mutate(fixture_payload)
+        assert mutate is not None or mutate_early is not None, (
+            "fixture defanged: no mutator"
+        )
+        rows = [_current_finding(id=i + 1) for i in range(row_count)]
+        if mutate_early is not None:
+            mutate_early(rows)
+        md = _current_findings_markdown(rows, title=title)
+        fixture_payload = _payload_with_findings(rows)
+        if mutate is not None:
+            mutate(fixture_payload)
         fixture_path = _write_staging(
             root,
             f"2026-07-17-branch-review-id-{slug}-r1.md",
@@ -2471,9 +2573,9 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "missing",
         "id-missing",
-        _mutate_missing_id,
         lambda errors: any("missing id" in e for e in errors),
         "finding id missing rejected",
+        mutate=_mutate_missing_id,
     )
 
     # r4 F4: pin the display-label index fallback. The same id-less row also
@@ -2486,12 +2588,12 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "missing-sibling",
         "id-missing-sibling",
-        _mutate_missing_id_and_bad_severity,
         lambda errors: any("missing id" in e for e in errors)
         and any(
             "at index" in e and "invalid severity" in e for e in errors
         ),
         "missing id row keeps sibling errors attributed via index label",
+        mutate=_mutate_missing_id_and_bad_severity,
     )
 
     # Homogeneous string ids keep every sort key tuple same-kind, so neither
@@ -2503,9 +2605,9 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "string",
         "id-string",
-        _mutate_str_ids,
         lambda errors: sum("must be an integer" in e for e in errors) >= 2,
         "finding id string rejected",
+        mutate=_mutate_str_ids,
     )
 
     # bool is an int subclass in Python; it must not pass the integer gate.
@@ -2516,10 +2618,10 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "bool",
         "id-bool",
-        _mutate_bool_id,
         lambda errors: sum("must be an integer" in e for e in errors) == 1
         and any("True" in e for e in errors),
         "finding id bool rejected",
+        mutate=_mutate_bool_id,
     )
 
     # Mixed-type ids crash sorted() today; the runner's TypeError catch
@@ -2530,9 +2632,9 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "mixed",
         "id-mixed",
-        _mutate_mixed_id,
         lambda errors: any("must be an integer" in e for e in errors),
         "finding id mixed types never crash the sort",
+        mutate=_mutate_mixed_id,
     )
 
     # r3 F1 RED fixture: a list severity is unhashable, so the frozen
@@ -2545,9 +2647,9 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "severity-list",
         "id-severity-list",
-        _mutate_list_severity,
         lambda errors: any("invalid severity" in e for e in errors),
         "finding severity unhashable never crashes the sort",
+        mutate=_mutate_list_severity,
     )
 
     # r4 F1 RED fixture: a list blast_radius is unhashable, so the
@@ -2561,9 +2663,9 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "blast-radius-list",
         "id-blast-radius-list",
-        _mutate_list_blast_radius,
         lambda errors: any("invalid blast_radius" in e for e in errors),
         "finding blast_radius unhashable never crashes the membership check",
+        mutate=_mutate_list_blast_radius,
     )
 
     # v1-gate-trio fixture: duplicate ids. Two rows sharing an id used to
@@ -2577,36 +2679,68 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "duplicate-id",
         "id-duplicate",
-        _mutate_duplicate_id,
         lambda errors: sum("duplicate id" in e for e in errors) == 1,
         "duplicate finding ids rejected (exactly one report)",
+        mutate=_mutate_duplicate_id,
     )
 
     # v1-gate-trio follow-up: pin the duplicate gate's additive-only
     # contract. The sidecar AND the markdown agree on ids [1, 1], so the
     # duplicate error must be the single report and the duplicate rows must
     # stay in conservation reconciliation and the order check (a refactor
-    # evicting them from valid_rows must turn this RED).
-    two_dup = [_current_finding(id=1), _current_finding(id=1)]
-    md_dup = _current_findings_markdown(two_dup, title="id-duplicate-agreeing")
-    dup_agreeing_path = _write_staging(
-        root,
-        "2026-07-17-branch-review-id-duplicate-agreeing-r1.md",
-        md_dup,
-        _payload_with_findings(two_dup),
-    )
-    try:
-        dup_agreeing_result = validate_staging_file(dup_agreeing_path, hard=True)
-    except TypeError:
-        dup_agreeing_result = None
-    check(
+    # evicting them from valid_rows must turn this RED). mutate_early sets
+    # every row's id before the markdown is rendered, so both sides agree.
+    def _mutate_early_all_ids_one(findings: list) -> None:
+        for finding in findings:
+            finding["id"] = 1
+
+    _run_id_fixture(
+        "duplicate-agreeing",
+        "id-duplicate-agreeing",
+        lambda errors: sum("duplicate id" in e for e in errors) == 1
+        and not any("conservation" in e or "order" in e for e in errors),
         "duplicate ids keep rows in conservation and order checks (single additive report)",
-        dup_agreeing_result is not None
-        and sum("duplicate id" in e for e in dup_agreeing_result.errors) == 1
-        and not any(
-            "conservation" in e or "order" in e
-            for e in dup_agreeing_result.errors
-        ),
+        mutate_early=_mutate_early_all_ids_one,
+    )
+
+    # Three agreeing rows with id 1 on both sides must report the duplicate
+    # id once per repeat occurrence (exactly two errors), with no
+    # conservation or order noise — a two-row fixture cannot discriminate
+    # per-occurrence reporting from a single-flag-per-run gate.
+    _run_id_fixture(
+        "duplicate-three",
+        "id-duplicate-three",
+        lambda errors: sum("duplicate id" in e for e in errors) == 2
+        and not any("conservation" in e or "order" in e for e in errors),
+        "three duplicate ids report one error per repeat occurrence",
+        mutate_early=_mutate_early_all_ids_one,
+        row_count=3,
+    )
+
+    # Cross-severity duplicate ids: two agreeing rows share id 1 at
+    # different severities (High then Medium, on BOTH sides). The
+    # duplicate-id error must be the sole report: the per-id conservation
+    # reconciliation is last-match-wins on id, so it would otherwise pair the
+    # first sidecar row with the last Markdown row and fire a false
+    # ``severity disagrees`` error; the fixture also pins that the fix does
+    # NOT key the reconciliation by (id, severity) — that alternative would
+    # produce a ``no matching Markdown block`` double-report for the
+    # first-severity row. High precedes Medium so the severity-order gate
+    # stays quiet.
+    def _mutate_early_cross_severity(findings: list) -> None:
+        for finding in findings:
+            finding["id"] = 1
+        findings[0]["severity"] = "High"
+
+    _run_id_fixture(
+        "duplicate-cross-severity",
+        "id-duplicate-cross-severity",
+        lambda errors: sum("duplicate id" in e for e in errors) == 1
+        and not any("severity disagrees" in e for e in errors)
+        and not any("no matching Markdown" in e for e in errors),
+        "cross-severity duplicate ids report only the duplicate error "
+        "(no false severity disagreement, no no-matching-block double-report)",
+        mutate_early=_mutate_early_cross_severity,
     )
 
     # v1-gate-trio RED fixture: a row with no severity key is today
@@ -2620,10 +2754,10 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "missing-severity",
         "id-missing-severity",
-        _mutate_missing_severity,
         lambda errors: any("missing severity" in e for e in errors)
         and not any("invalid severity" in e for e in errors),
         "missing severity gets a dedicated message (no invalid-severity misreport)",
+        mutate=_mutate_missing_severity,
     )
 
     # v1-gate-trio follow-up: a present explicit-null severity must hit the
@@ -2636,10 +2770,10 @@ def _selftest_current_contract(root: Path, check) -> None:
     _run_id_fixture(
         "severity-null",
         "id-severity-null",
-        _mutate_null_severity,
         lambda errors: any("invalid severity" in e for e in errors)
         and not any("missing severity" in e for e in errors),
         "explicit-null severity reported as invalid, not missing",
+        mutate=_mutate_null_severity,
     )
 
     # F13 RED probe: one validation run must classify the sidecar payload
@@ -3449,281 +3583,207 @@ def _selftest_producer_artifacts(root: Path, check) -> None:
     )
 
 
-def _selftest_source_plan_cli(root: Path, check) -> None:
-    """The --source-plan CLI flag must recompute the plan digest and reach the
-    stale-digest comparison. Pins the main() wiring that
-    validate_staging_file(expected_digest=...) already covers at the function
-    level in _selftest_source_digest. Each case must be DISCRIMINATING: it must
-    fail if the wiring were severed (expected_digest dropped), not pass via the
-    presence-only path."""
-    import io
+@contextlib.contextmanager
+def _stderr_captured() -> Iterator[io.StringIO]:
+    """Capture stderr for selftests that assert on main()'s output.
 
-    plan_path = root / "plan.md"
-    plan_bytes = b"# Plan\n## Tasks\n1. do foo\n"
-    plan_path.write_bytes(plan_bytes)
-    plan_digest = compute_source_digest("plan", plan_bytes)
-
-    # A second, different file so we can prove the digest comparison actually
-    # ran (a severed-wiring regression would pass regardless of which file we
-    # point at; pointing at the wrong file and asserting exit 1 is the
-    # discriminating positive-vs-negative contrast).
-    other_path = root / "other.md"
-    other_path.write_bytes(b"# Not the plan\n")
-
-    payload = json.loads(json.dumps(_current_clear_payload()))
-    payload["source_digest"] = plan_digest
-    payload["source_kind"] = "plan"
-    staging = _write_staging(
-        root, "2026-07-17-plan-review-cli-r1.md",
-        _current_clear_markdown("cli"), payload,
-    )
-
-    # Case A (discriminating): point --source-plan at the CORRECT plan -> exit 0.
-    rc_fresh = main(["--hard", str(staging), "--source-plan", str(plan_path)])
-    check("--source-plan fresh (correct plan) exits 0", rc_fresh == 0)
-
-    # Case A' (the discriminating twin): point --source-plan at a DIFFERENT
-    # existing file -> exit 1. This is what makes Case A meaningful: if the
-    # wiring were severed (expected_digest dropped), both A and A' would exit 0.
-    rc_wrong_file = main(["--hard", str(staging), "--source-plan", str(other_path)])
-    check(
-        "--source-plan against a different file exits 1 (wiring is live)",
-        rc_wrong_file == 1,
-    )
-
-    # Case B: fold the plan (digest changes) -> exit 1 with stale error AND the
-    # F7 path hint naming the hashed file.
-    plan_path.write_bytes(plan_bytes + b"\nfolded F1\n")
+    Silence-only wrappers are gone since the parser stopped printing
+    (warn callback); only capture-and-assert sites remain.
+    """
     buf = io.StringIO()
-    real_stderr = sys.stderr
-    sys.stderr = buf
-    try:
-        rc_stale = main(["--hard", str(staging), "--source-plan", str(plan_path)])
-    finally:
-        sys.stderr = real_stderr
-    stale_text = buf.getvalue()
+    with contextlib.redirect_stderr(buf):
+        yield buf
+
+
+def _check_empty_flag_loud_exit(
+    staging_path: Path, flag: str, label: str, check
+) -> None:
+    """Shared boilerplate for the r5 F9 empty-flag loud-exit fixtures: run
+    main() with an empty source-flag value under the io.StringIO stderr
+    swap, capture the argparse SystemExit, and assert exit code 2 plus the
+    must-not-be-empty message on stderr (an empty value must never silently
+    skip the digest gate)."""
+    with _stderr_captured() as buf:
+        try:
+            main(["--hard", str(staging_path), flag, ""])
+            empty_rc: object = None
+        except SystemExit as exc:
+            empty_rc = exc.code
     check(
-        "--source-plan stale (post-fold) digest exits 1 with stale error",
-        rc_stale == 1 and "stale" in stale_text and "source_digest" in stale_text,
-    )
-    check(
-        "stale-digest error includes the hashed source-path hint (F7)",
-        str(plan_path) in stale_text,
-    )
-
-    # Case C: missing source-plan file -> exit 1.
-    rc_missing = main(
-        ["--hard", str(staging), "--source-plan", str(root / "nope.md")]
-    )
-    check("--source-plan missing file exits 1", rc_missing == 1)
-
-    # r5 F9: an empty --source-plan value must fail LOUDLY (argparse error,
-    # exit 2), never silently skip the stale-digest gate. Pre-fix the
-    # truthiness routing treated "" as not-supplied and exited 0.
-    try:
-        main(["--hard", str(staging), "--source-plan", ""])
-        empty_rc: object = None
-    except SystemExit as exc:
-        empty_rc = exc.code
-    check(
-        "--source-plan empty value exits loudly (does not silently skip the digest gate, r5 F9)",
-        empty_rc == 2,
+        label,
+        empty_rc == 2 and "must not be empty" in buf.getvalue(),
     )
 
 
-def _selftest_source_rfc_cli(root: Path, check) -> None:
-    """The --source-rfc CLI flag must recompute the RFC digest and reach the
-    stale-digest comparison, with the sidecar's source_kind type-checked as
-    'rfc'. Mirrors _selftest_source_plan_cli. Each case must be DISCRIMINATING:
-    it must fail if the wiring were severed (expected_digest dropped), not pass
-    via the presence-only path."""
-    import io
-
-    rfc_path = root / "rfc.md"
-    rfc_bytes = b"# RFC\n## Goals\n1. do foo\n"
-    rfc_path.write_bytes(rfc_bytes)
-    rfc_digest = compute_source_digest("rfc", rfc_bytes)
-
-    other_path = root / "other-rfc.md"
-    other_path.write_bytes(b"# Not the rfc\n")
-
-    payload = json.loads(json.dumps(_current_clear_payload()))
-    payload["source_digest"] = rfc_digest
-    payload["source_kind"] = "rfc"
-    staging = _write_staging(
-        root, "2026-07-17-rfc-review-cli-r1.md",
-        _current_clear_markdown("cli"), payload,
-    )
-
-    # Case A: point --source-rfc at the CORRECT rfc -> exit 0.
-    rc_fresh = main(["--hard", str(staging), "--source-rfc", str(rfc_path)])
-    check("--source-rfc fresh (correct rfc) exits 0", rc_fresh == 0)
-
-    # Case A': point --source-rfc at a DIFFERENT file -> exit 1.
-    rc_wrong_file = main(["--hard", str(staging), "--source-rfc", str(other_path)])
-    check(
-        "--source-rfc against a different file exits 1 (wiring is live)",
-        rc_wrong_file == 1,
-    )
-
-    # Case B: fold the RFC (digest changes) -> exit 1 with stale error AND the
-    # F7 path hint naming the hashed file via --source-rfc.
-    rfc_path.write_bytes(rfc_bytes + b"\nfolded F1\n")
-    buf = io.StringIO()
-    real_stderr = sys.stderr
-    sys.stderr = buf
-    try:
-        rc_stale = main(["--hard", str(staging), "--source-rfc", str(rfc_path)])
-    finally:
-        sys.stderr = real_stderr
-    stale_text = buf.getvalue()
-    check(
-        "--source-rfc stale (post-fold) digest exits 1 with stale error",
-        rc_stale == 1 and "stale" in stale_text and "source_digest" in stale_text,
-    )
-    check(
-        "stale-digest error names --source-rfc and the hashed source-path (F7)",
-        "--source-rfc" in stale_text and str(rfc_path) in stale_text,
-    )
-
-    # Case C: missing source-rfc file -> exit 1.
-    rc_missing = main(
-        ["--hard", str(staging), "--source-rfc", str(root / "nope.md")]
-    )
-    check("--source-rfc missing file exits 1", rc_missing == 1)
-
-    # Case D: source_kind mismatch — sidecar says 'plan' but flag is --source-rfc
-    # -> exit 1 with a mismatch error. Pins that the flag type-checks the
-    # sidecar's declared kind rather than asserting it in prose.
-    payload_plan = json.loads(json.dumps(_current_clear_payload()))
-    payload_plan["source_digest"] = rfc_digest
-    payload_plan["source_kind"] = "plan"
-    staging_plan = _write_staging(
-        root, "2026-07-17-rfc-review-cli-r1-plan.md",
-        _current_clear_markdown("cli"), payload_plan,
-    )
-    rc_kind_mismatch = main(
-        ["--hard", str(staging_plan), "--source-rfc", str(rfc_path)]
-    )
-    buf2 = io.StringIO()
-    real_stderr2 = sys.stderr
-    sys.stderr = buf2
-    try:
-        main(["--hard", str(staging_plan), "--source-rfc", str(rfc_path)])
-    finally:
-        sys.stderr = real_stderr2
-    check(
-        "--source-rfc rejects a sidecar declaring source_kind=plan",
-        rc_kind_mismatch == 1 and "source_kind mismatch" in buf2.getvalue(),
-    )
+# F12: the single source-flag table. One row per CLI source flag:
+# (flag_name, argparse dest, sidecar source_kind). Drives the empty-value
+# check, the mutual-exclusivity check, and the source routing in main(), so
+# the wiring exists once instead of once per flag. Kept beside
+# _SOURCE_CLI_FIXTURES (same join key: the sidecar source_kind) so a new
+# kind registers in one place.
+_SOURCE_FLAG_TABLE = (
+    ("--source-plan", "source_plan", "plan"),
+    ("--source-rfc", "source_rfc", "rfc"),
+    ("--source-doc", "source_doc", "document"),
+)
 
 
-def _selftest_source_doc_cli(root: Path, check) -> None:
-    """The --source-doc CLI flag (r4 F4) must recompute the document digest
-    and reach the stale-digest comparison, with the sidecar's source_kind
-    type-checked as 'document'. Mirrors _selftest_source_plan_cli. Each case
-    must be DISCRIMINATING: pre-fix (no --source-doc flag) this whole test
-    could not pass because argparse rejected the unknown flag."""
-    import io
+# Per-kind selftest fixtures for _selftest_source_cli, keyed by source_kind:
+# (artifact filename, artifact bytes, mutation bytes, staging-doc stem,
+#  other-file name, other-file bytes). Kinds come from _SOURCE_FLAG_TABLE.
+_SOURCE_CLI_FIXTURES = {
+    "plan": (
+        "plan.md", b"# Plan\n## Tasks\n1. do foo\n", b"\nfolded F1\n",
+        "2026-07-17-plan-review-cli-r1", "other.md", b"# Not the plan\n",
+    ),
+    "rfc": (
+        "rfc.md", b"# RFC\n## Goals\n1. do foo\n", b"\nfolded F1\n",
+        "2026-07-17-rfc-review-cli-r1", "other-rfc.md", b"# Not the rfc\n",
+    ),
+    "document": (
+        "doc.md", b"# Doc\n## Steps\n1. do foo\n", b"\nupdated section\n",
+        "2026-07-17-confluence-review-cli-r1", "other-doc.md", b"# Not the doc\n",
+    ),
+}
 
-    doc_path = root / "doc.md"
-    doc_bytes = b"# Doc\n## Steps\n1. do foo\n"
-    doc_path.write_bytes(doc_bytes)
-    doc_digest = compute_source_digest("document", doc_bytes)
 
-    other_path = root / "other-doc.md"
-    other_path.write_bytes(b"# Not the doc\n")
-
-    payload = json.loads(json.dumps(_current_clear_payload()))
-    payload["source_digest"] = doc_digest
-    payload["source_kind"] = "document"
-    staging = _write_staging(
-        root, "2026-07-17-confluence-review-cli-r1.md",
-        _current_clear_markdown("cli"), payload,
-    )
-
-    # Case A: point --source-doc at the CORRECT document -> exit 0.
-    rc_fresh = main(["--hard", str(staging), "--source-doc", str(doc_path)])
-    check("--source-doc fresh (correct document) exits 0", rc_fresh == 0)
-
-    # Case A': point --source-doc at a DIFFERENT file -> exit 1 (wiring live).
-    rc_wrong_file = main(["--hard", str(staging), "--source-doc", str(other_path)])
-    check(
-        "--source-doc against a different file exits 1 (wiring is live)",
-        rc_wrong_file == 1,
-    )
-
-    # Case B: stale post-edit document -> exit 1 with stale error and hint.
-    doc_path.write_bytes(doc_bytes + b"\nupdated section\n")
-    buf = io.StringIO()
-    real_stderr = sys.stderr
-    sys.stderr = buf
-    try:
-        rc_stale = main(["--hard", str(staging), "--source-doc", str(doc_path)])
-    finally:
-        sys.stderr = real_stderr
-    stale_text = buf.getvalue()
-    check(
-        "--source-doc stale digest exits 1 with stale error",
-        rc_stale == 1 and "stale" in stale_text and "source_digest" in stale_text,
-    )
-    check(
-        "stale-digest error names --source-doc and the hashed source-path",
-        "--source-doc" in stale_text and str(doc_path) in stale_text,
-    )
-
-    # Case C: missing --source-doc file -> exit 1.
-    rc_missing = main(
-        ["--hard", str(staging), "--source-doc", str(root / "nope.md")]
-    )
-    check("--source-doc missing file exits 1", rc_missing == 1)
-
-    # Case D: source_kind mismatch — sidecar says 'plan' but flag is
-    # --source-doc -> exit 1 with a mismatch error (the flag type-checks the
-    # sidecar's declared kind; the pre-fix workaround of passing a
-    # document-kind digest via --source-plan hard-failed the same way).
-    payload_plan = json.loads(json.dumps(_current_clear_payload()))
-    payload_plan["source_digest"] = doc_digest
-    payload_plan["source_kind"] = "plan"
-    staging_plan = _write_staging(
-        root, "2026-07-17-confluence-review-cli-r1-plan.md",
-        _current_clear_markdown("cli"), payload_plan,
-    )
-    buf2 = io.StringIO()
-    real_stderr2 = sys.stderr
-    sys.stderr = buf2
-    try:
-        rc_kind_mismatch = main(
-            ["--hard", str(staging_plan), "--source-doc", str(doc_path)]
+def _selftest_source_cli(root: Path, check) -> None:
+    """The --source-plan/--source-rfc/--source-doc CLI flags must recompute
+    their artifact's digest and reach the stale-digest comparison, with the
+    sidecar's source_kind type-checked against the flag used. One
+    parameterized family (F12) iterating the kinds in _SOURCE_FLAG_TABLE;
+    pre-fix this was three near-duplicate families with visible drift. Pins
+    the main() wiring that validate_staging_file(expected_digest=...) already
+    covers at the function level in _selftest_source_digest. Each case must be
+    DISCRIMINATING: it must fail if the wiring were severed (expected_digest
+    dropped), not pass via the presence-only path. Per kind the family covers
+    the union of the three original families' cases: fresh, wrong-file, stale,
+    missing-file, source_kind mismatch (r4 F1), mutual exclusivity (r4 F1),
+    and the r5 F9 empty-value loud exit."""
+    for flag_name, _dest, kind in _SOURCE_FLAG_TABLE:
+        src_name, src_bytes, mutation, stem, other_name, other_bytes = (
+            _SOURCE_CLI_FIXTURES[kind]
         )
-    finally:
-        sys.stderr = real_stderr2
-    check(
-        "--source-doc rejects a sidecar declaring source_kind=plan",
-        rc_kind_mismatch == 1 and "source_kind mismatch" in buf2.getvalue(),
-    )
+        src_path = root / src_name
+        src_path.write_bytes(src_bytes)
+        src_digest = compute_source_digest(kind, src_bytes)
 
-    # Case E: the three source flags are mutually exclusive.
-    buf3 = io.StringIO()
-    real_stderr3 = sys.stderr
-    sys.stderr = buf3
-    try:
-        main(
-            [
-                "--hard", str(staging),
-                "--source-doc", str(doc_path),
-                "--source-plan", str(doc_path),
-            ]
+        # A second, different file so we can prove the digest comparison
+        # actually ran (a severed-wiring regression would pass regardless of
+        # which file we point at; pointing at the wrong file and asserting
+        # exit 1 is the discriminating positive-vs-negative contrast).
+        other_path = root / other_name
+        other_path.write_bytes(other_bytes)
+
+        payload = json.loads(json.dumps(_current_clear_payload()))
+        payload["source_digest"] = src_digest
+        payload["source_kind"] = kind
+        staging = _write_staging(
+            root, f"{stem}.md", _current_clear_markdown("cli"), payload,
         )
-        rc_both = 2  # argparse SystemExit(2) is raised before main returns
-    except SystemExit as exc:
-        rc_both = int(exc.code)
-    finally:
-        sys.stderr = real_stderr3
-    check(
-        "--source-doc and --source-plan are mutually exclusive",
-        rc_both == 2 and "mutually exclusive" in buf3.getvalue(),
-    )
+
+        # Case A (discriminating): point the flag at the CORRECT artifact ->
+        # exit 0.
+        rc_fresh = main(["--hard", str(staging), flag_name, str(src_path)])
+        check(f"{flag_name} fresh (correct artifact) exits 0", rc_fresh == 0)
+
+        # Case A' (the discriminating twin): point the flag at a DIFFERENT
+        # existing file -> exit 1. If the wiring were severed (expected_digest
+        # dropped), both A and A' would exit 0.
+        rc_wrong_file = main(["--hard", str(staging), flag_name, str(other_path)])
+        check(
+            f"{flag_name} against a different file exits 1 (wiring is live)",
+            rc_wrong_file == 1,
+        )
+
+        # Case B: mutate the artifact (digest changes) -> exit 1 with the
+        # stale error AND the F7 hint naming the flag and the hashed file.
+        src_path.write_bytes(src_bytes + mutation)
+        with _stderr_captured() as buf:
+            rc_stale = main(["--hard", str(staging), flag_name, str(src_path)])
+        stale_text = buf.getvalue()
+        check(
+            f"{flag_name} stale (post-mutation) digest exits 1 with stale error",
+            rc_stale == 1 and "stale" in stale_text and "source_digest" in stale_text,
+        )
+        check(
+            f"{flag_name} stale-digest error names the flag and the "
+            "hashed source-path (F7)",
+            flag_name in stale_text and str(src_path) in stale_text,
+        )
+
+        # Case C: missing source file -> exit 1.
+        rc_missing = main(
+            ["--hard", str(staging), flag_name, str(root / "nope.md")]
+        )
+        check(f"{flag_name} missing file exits 1", rc_missing == 1)
+
+        # Case D: source_kind mismatch — the sidecar declares a DIFFERENT kind
+        # than the flag -> exit 1 with a mismatch error. Pins that the flag
+        # type-checks the sidecar's declared kind rather than asserting it in
+        # prose (r4 F1: this case now runs for every kind; the rfc/doc
+        # families used a 'plan'-declared sidecar, the plan kind uses 'rfc').
+        declared_kind = "rfc" if kind == "plan" else "plan"
+        payload_mismatch = json.loads(json.dumps(_current_clear_payload()))
+        payload_mismatch["source_digest"] = src_digest
+        payload_mismatch["source_kind"] = declared_kind
+        staging_mismatch = _write_staging(
+            root, f"{stem}-mismatch.md",
+            _current_clear_markdown("cli"), payload_mismatch,
+        )
+        with _stderr_captured() as buf2:
+            rc_kind_mismatch = main(
+                ["--hard", str(staging_mismatch), flag_name, str(src_path)]
+            )
+        check(
+            f"{flag_name} rejects a sidecar declaring source_kind={declared_kind}",
+            rc_kind_mismatch == 1 and "source_kind mismatch" in buf2.getvalue(),
+        )
+
+        # Case E: the three source flags are mutually exclusive (r4 F1: this
+        # case now runs for every kind, not only --source-doc). Pair the
+        # current kind's flag with a different kind's flag.
+        other_flag = next(
+            f for f, _d, k in _SOURCE_FLAG_TABLE if k != kind
+        )
+        rc_both = None
+        with _stderr_captured() as buf3:
+            try:
+                main(
+                    [
+                        "--hard", str(staging),
+                        flag_name, str(src_path),
+                        other_flag, str(src_path),
+                    ]
+                )
+                # argparse SystemExit(2) is raised before main returns; a
+                # non-raising regression leaves rc_both None and fails below.
+            except SystemExit as exc:
+                rc_both = int(exc.code)
+        # r1 F3: the older weaker rc-plus-substring check was deleted; the
+        # table-derived check below pins the full message text (which
+        # contains "mutually exclusive") and rc 2, strictly subsuming it.
+        _flags = [f for f, _d, _k in _SOURCE_FLAG_TABLE]
+        _expected_text = (
+            ", ".join(_flags[:-1]) + ", and " + _flags[-1]
+            + " are mutually exclusive"
+        )
+        check(
+            "mutual-exclusivity message keeps the terminal and, table-derived",
+            rc_both == 2 and _expected_text in buf3.getvalue(),
+        )
+
+        # Case F (r5 F9): an empty flag value must fail LOUDLY (argparse
+        # error, exit 2) with the must-not-be-empty message on stderr, never
+        # silently skip the stale-digest gate. Pre-fix the truthiness routing
+        # treated "" as not-supplied and exited 0.
+        _check_empty_flag_loud_exit(
+            staging,
+            flag_name,
+            f"{flag_name} empty value exits loudly (does not silently skip "
+            "the digest gate, r5 F9)",
+            check,
+        )
 
 
 def _selftest_discarded_header_skip(root: Path, check) -> None:
@@ -3755,8 +3815,8 @@ def _selftest_discarded_header_skip(root: Path, check) -> None:
     """
     import json as _json
 
-    # Reuse the canonical fixtures the way _selftest_source_plan_cli does
-    # (lines 2419-2425). The fixture MUST be a full current-format staging doc,
+    # Reuse the canonical fixtures the way _selftest_source_cli does
+    # (its _SOURCE_CLI_FIXTURES setup). The fixture MUST be a full current-format staging doc,
     # NOT a stub; a stub fails validate_staging_file for unrelated structural
     # reasons (missing ## Metadata / ## Review Statistics / ### Panel).
     payload = _json.loads(_json.dumps(_current_clear_payload()))
@@ -4173,13 +4233,16 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
     # skipped the pattern and conservation checks). The scalar fields are
     # covered too, pinning the r6 F8 delegation: if someone later adds a
     # scalar to the null-allowed exception list, these fixtures turn RED.
+    # The iteration is computed from the required-field tuple itself (minus
+    # schema_version, whose explicit null is rejected separately by
+    # classify_sidecar_schema as unsupported, and minus the two r5 F1
+    # nullable enums), so a newly required field gains an explicit-null
+    # fixture automatically instead of relying on a hardcoded list.
     for field_name in (
-        "findings",
-        "counts",
-        "date",
-        "review_type",
-        "artifact_slug",
-        "round",
+        f
+        for f in V1_REQUIRED_TOP_LEVEL_FIELDS
+        if f != "schema_version"
+        and f not in ("selection_reason", "escalation_reason")
     ):
         null_required = _json.loads(_json.dumps(base_payload))
         null_required[field_name] = None
@@ -4216,6 +4279,23 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
 
     def _v1_copy() -> dict:
         return _json.loads(_json.dumps(base_payload))
+
+    # r5 F1 carve-out keep-pass (companion to the null-rejection loop above):
+    # for the two nullable enums an explicit JSON null is the documented
+    # not-applicable form, so a payload carrying both as null stays ok. Pins
+    # the carve-out explicitly so the null-rejection loop cannot silently
+    # widen over these two fields.
+    nullable_enum_payload = _v1_copy()
+    nullable_enum_payload["selection_reason"] = None
+    nullable_enum_payload["escalation_reason"] = None
+    check(
+        "v1 contract: explicit JSON null selection_reason and escalation_reason "
+        "are the legal not-applicable form (r5 F1 nullable enum carve-out)",
+        validate_staging_file(
+            stage("null-nullable-enums-keep-pass", nullable_enum_payload, base_md),
+            hard=True,
+        ).ok,
+    )
 
     # Scalar required-field type gates.
     for field_name, bad_value, message in (
@@ -4271,6 +4351,31 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
             and any(f"{field_name!r}" in e and message in e for e in result.errors),
         )
 
+    # Unhashable source_kind (crash fix fixture): a JSON list in
+    # source_kind must produce the targeted one-of error, not a TypeError
+    # from the frozenset membership test. try/except keeps the pre-fix
+    # crash a recorded FAIL instead of aborting the selftest run.
+    try:
+        unhashable_kind = _v1_copy()
+        unhashable_kind["source_kind"] = ["code"]
+        unhashable_result = validate_staging_file(
+            stage("source-kind-unhashable-v1", unhashable_kind, base_md),
+            hard=True,
+        )
+        check(
+            "v1 contract: unhashable source_kind gets the targeted one-of error",
+            not unhashable_result.ok
+            and any(
+                "source_kind" in e and "must be one of" in e
+                for e in unhashable_result.errors
+            ),
+        )
+    except TypeError:
+        check(
+            "v1 contract: unhashable source_kind gets the targeted one-of error",
+            False,
+        )
+
     # v1-gate-trio: `round` is documented dual-typed (string or integer;
     # SKILL.md contract table). Bool and float shapes must fail hard; bool
     # needs the explicit exclusion because True is an int subclass in Python.
@@ -4315,14 +4420,13 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         )
 
     # v1-gate-trio keep-valid guards beside the over-gating guards above:
-    # the r5 F1 carve-out keeps null selection_reason/escalation_reason legal
-    # even after the F8 loop widens to the pair (the None skip makes the null
-    # gate the single reporter), and non-null enum strings pin the widened
-    # type gate against over-gating legal values. These pass before and
-    # after any gate changes; they pin legal forms, not gates.
+    # non-null enum strings pin the widened type gate against over-gating
+    # legal values. (The null keep-valid entries were removed as redundant:
+    # the base payload already carries both nulls through every ``_v1_copy()``
+    # check, and Task 2's r5 F1 carve-out keep-pass pins that form
+    # explicitly.) These pass before and after any gate changes; they pin
+    # legal forms, not gates.
     for field_name, keep_value, value_form in (
-        ("selection_reason", None, "null"),
-        ("escalation_reason", None, "null"),
         ("selection_reason", "focused-panel", "string"),
         ("escalation_reason", "user-escalated", "string"),
     ):
@@ -4340,6 +4444,34 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
                 hard=True,
             ).ok,
         )
+
+    # r5 additional item: pin the focused-panel double-report. A version-1
+    # payload with panel_mode "focused" and a present-but-empty
+    # selection_reason ([] is falsy) reports BOTH the F8 scalar type-gate
+    # error and the focused-panel presence error from the current-shape
+    # gate. The pin keeps this cosmetic double-report a conscious contract
+    # choice: a future de-duplication must change this check, not pass
+    # silently (keep-fail fixture, no behavior change).
+    focused_empty = _v1_copy()
+    focused_empty["panel_mode"] = "focused"
+    focused_empty["selection_reason"] = []
+    focused_empty_result = validate_staging_file(
+        stage("focused-empty-selection-reason", focused_empty, base_md),
+        hard=True,
+    )
+    check(
+        "v1 contract: focused panel empty selection_reason double-report "
+        "(type error AND presence error)",
+        not focused_empty_result.ok
+        and any(
+            "'selection_reason'" in e and "must be a string" in e
+            for e in focused_empty_result.errors
+        )
+        and any(
+            "focused panel missing selection_reason" in e
+            for e in focused_empty_result.errors
+        ),
+    )
 
     # r3 F2: example bullets in Comment/Analysis bodies (prose or fenced)
     # must NOT overwrite the finding's real parsed metadata. Pre-fix the
@@ -4407,20 +4539,98 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "unclosed opener not injected; fixture defanged"
     )
     parsed_unclosed = parse_markdown_findings(unclosed_md)
+    ready_unclosed = is_review_ready(unclosed_md)
     check(
         "fence fix: unclosed fence before a later finding still parses both findings",
         sorted(f["id"] for f in parsed_unclosed) == [1, 2],
     )
     check(
         "fence fix: unclosed fence cannot hide a blocking pending finding from readiness",
-        is_review_ready(unclosed_md) is False,
+        ready_unclosed is False,
     )
     unclosed_payload = _payload_with_findings([fence_f2, fence_f1])
+    unclosed_val_result = validate_staging_file(
+        stage("unclosed-fence", unclosed_payload, unclosed_md), hard=True
+    )
     check(
         "fence fix: staging doc with an unclosed fence validates (conservation sees both findings)",
-        validate_staging_file(
-            stage("unclosed-fence", unclosed_payload, unclosed_md), hard=True
-        ).ok,
+        unclosed_val_result.ok,
+    )
+    # The fallback warning surfaces through the result's structural warning
+    # channel (result.add_warning via the parser's warn callback), at least
+    # once per validation: the exact entry count depends on how many parsing
+    # passes the fixture's payload triggers, so gate on "at least one" here;
+    # the single-warning-per-parse contract is pinned by the direct-parse
+    # warn check below.
+    check(
+        "fence fix: unclosed fence surfaces a result warning through the warn callback",
+        unclosed_val_result.ok
+        and any("unclosed code fence" in w for w in unclosed_val_result.warnings),
+    )
+    # Fence-scanner round 2: when the partial fallback runs, the parser passes
+    # exactly ONE warning per parsing pass of the Findings section to the
+    # ``warn`` callback naming the 1-based opener line number counted WITHIN
+    # the Findings section (the classifier's splitlines indexing basis,
+    # independent of where the heading sits in the file) and stating that
+    # post-opener metadata bullets are not recovered — while the r6 F3
+    # recovery behavior above stays unchanged (both findings still parse; the
+    # later blocking pending finding after the opener is still recovered and
+    # still blocks readiness, r4 F3 fixture shape).
+    warn_section = extract_findings_section(unclosed_md)
+    assert warn_section is not None, "fixture defanged: no Findings section"
+    _, warn_opener_idx = classify_fence_lines(warn_section.splitlines())
+    assert warn_opener_idx is not None, (
+        "fixture defanged: the injected fence closes"
+    )
+    warns: list[str] = []
+    parsed_warn = parse_markdown_findings(unclosed_md, warn=warns.append)
+    check(
+        "fence fix: unclosed fence warning passed once to the warn callback "
+        "naming the Findings-section opener line, recovery unchanged "
+        "(# unclosed-fence-warning)",
+        len(warns) == 1
+        # Full-text pin (r1 F2): the emitted warning equals the exact full
+        # message built from the same template the parser emits, so the
+        # plan's byte-identical wording invariant is enforced end to end,
+        # not via substrings. The hardcoded line 11 (r1 F6) keeps pinning
+        # the fixture's true opener line so a coordinated indexing drift in
+        # the classifier and warning cannot ship a misleading number while
+        # staying green; the classifier call above stays as the defang
+        # guard (fixture must actually contain an unclosed opener at the
+        # derived index).
+        and warns[0] == (
+            "warning: unclosed code fence in the Findings section (opener "
+            f"at line 11 of the Findings section); "
+            "findings after the opener are recovered with heading "
+            "resets, but post-opener metadata bullets are not recovered; "
+            "this warning repeats once per parsing pass of the Findings "
+            "section, so a full validation run may "
+            "print it more than once"
+        )
+        and sorted(f["id"] for f in parsed_warn) == [1, 2]
+        and next(
+            (
+                f.get("blocking")
+                for f in parsed_warn
+                if f.get("id") == 2
+            ),
+            None,
+        )
+        is True
+        and ready_unclosed is False,
+    )
+    # r1 F1: the DEFAULT (warn omitted) parse path must stay fully silent
+    # at runtime, not only by source inspection: a regression reintroducing
+    # a stderr print behind the default would otherwise fail no automated
+    # gate (the warn-callback check above exercises only the explicit
+    # callback path).
+    with _stderr_captured() as default_err:
+        parsed_default = parse_markdown_findings(unclosed_md)
+    check(
+        "fence fix: default warn-omitted parse stays silent on stderr, "
+        "recovery unchanged (# unclosed-fence-warning)",
+        default_err.getvalue() == ""
+        and sorted(f["id"] for f in parsed_default) == [1, 2],
     )
     # r5 F5: the fence-length comparison pinned directly. A four-backtick
     # opener containing an embedded three-backtick line plus a trailing
@@ -4553,6 +4763,11 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "tilde opener not tracked as a fence; fixture defanged"
     )
     parsed_tilde_unclosed = parse_markdown_findings(tilde_unclosed_md)
+    tilde_unclosed_ready = is_review_ready(tilde_unclosed_md)
+    tilde_unclosed_ok = validate_staging_file(
+        stage("tilde-unclosed-containment", _payload_with_findings([tilde_f2, tilde_f1]), tilde_unclosed_md),
+        hard=True,
+    ).ok
     check(
         "fence fix: unclosed tilde fence before a later finding still parses both "
         "findings (# tilde-unclosed-containment)",
@@ -4561,15 +4776,12 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
     check(
         "fence fix: unclosed tilde fence cannot hide a blocking pending finding from "
         "readiness (# tilde-unclosed-containment)",
-        is_review_ready(tilde_unclosed_md) is False,
+        tilde_unclosed_ready is False,
     )
     check(
         "fence fix: staging doc with an unclosed tilde fence validates (conservation "
         "sees both findings) (# tilde-unclosed-containment)",
-        validate_staging_file(
-            stage("tilde-unclosed-containment", _payload_with_findings([tilde_f2, tilde_f1]), tilde_unclosed_md),
-            hard=True,
-        ).ok,
+        tilde_unclosed_ok,
     )
     # reset-axis-contract: the reset axis is selected solely by the
     # keyword-only predicate — no half-configured mode exists, and a
@@ -4802,13 +5014,14 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "fixture defanged: the injected example still closes its fence"
     )
     parsed_silent_unclosed = parse_markdown_findings(silent_unclosed_md)
+    silent_unclosed_ready = is_review_ready(silent_unclosed_md)
     check(
         "fence fix: an unclosed example fence leaves the in-example bullet "
         "unrecovered (fail-open residual pinned): blocking stays false and "
         "readiness stays true (# silent-misparse-metadata-region)",
         len(parsed_silent_unclosed) == 1
         and parsed_silent_unclosed[0].get("blocking") is False
-        and is_review_ready(silent_unclosed_md) is True,
+        and silent_unclosed_ready is True,
     )
     # phantom-f99-info-string: a properly closed fenced example in the
     # Comment body quoting an inner ```python line and a quoted #### F99.
@@ -4888,6 +5101,14 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "fenced example not injected; fixture defanged"
     )
     parsed_fallback = parse_markdown_findings(fallback_md)
+    fallback_val_ok = validate_staging_file(
+        stage(
+            "fallback-preserves-fenced-example",
+            _payload_with_findings([fb_f1, fb_f2, fb_f3]),
+            fallback_md,
+        ),
+        hard=True,
+    ).ok
     check(
         "fence fix: fallback keeps the fenced example as content; no phantom "
         "F99 finding, exactly the real findings parse "
@@ -4906,14 +5127,7 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "fence fix: staging doc with a fenced example plus a later unclosed "
         "fence validates hard with no phantom-finding conservation error "
         "(# fallback-preserves-fenced-example)",
-        validate_staging_file(
-            stage(
-                "fallback-preserves-fenced-example",
-                _payload_with_findings([fb_f1, fb_f2, fb_f3]),
-                fallback_md,
-            ),
-            hard=True,
-        ).ok,
+        fallback_val_ok,
     )
 
     # phantom-unclosed-fallback (GREEN today, must stay green): an UNCLOSED
@@ -5029,6 +5243,14 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "fenced example not injected; fixture defanged"
     )
     parsed_same_group = parse_markdown_findings(same_group_md)
+    sg_val_ok = validate_staging_file(
+        stage(
+            "fallback-same-severity-group",
+            _payload_with_findings([sg_f1, sg_f2, sg_f3]),
+            same_group_md,
+        ),
+        hard=True,
+    ).ok
     check(
         "fence fix: same-group fallback parse yields exactly the real "
         "findings, no phantom F99 (# fallback-same-severity-group)",
@@ -5062,14 +5284,7 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
     check(
         "fence fix: same-group staging doc validates hard with no "
         "conservation error (# fallback-same-severity-group)",
-        validate_staging_file(
-            stage(
-                "fallback-same-severity-group",
-                _payload_with_findings([sg_f1, sg_f2, sg_f3]),
-                same_group_md,
-            ),
-            hard=True,
-        ).ok,
+        sg_val_ok,
     )
 
     # Negative twin: the same dashed illustrative bullets placed BETWEEN the
@@ -5125,6 +5340,11 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "v1 contract: schema classifier classify_sidecar_schema is exported",
         callable(classify_sidecar_schema),
     )
+    check(
+        "compat handshake: COMPAT_VERSION declared (int >= 1)",
+        isinstance(globals().get("COMPAT_VERSION"), int)
+        and globals().get("COMPAT_VERSION") >= 1,
+    )
     legacy_payload = _json.loads(_json.dumps(base_payload))
     del legacy_payload["schema_version"]
     check(
@@ -5150,6 +5370,31 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         "v1 contract: classifier labels versionless payload legacy",
         "legacy" in str(classify_sidecar_schema(legacy_payload)),
     )
+    verdict_ok = _json.loads(_json.dumps(base_payload))
+    verdict_ok["verdict"] = "yes"
+    check(
+        "v1 contract: version-1 sidecar with verdict 'yes' passes hard",
+        validate_staging_file(stage("verdict-yes", verdict_ok, base_md), hard=True).ok,
+    )
+    for verdict_name, verdict_slug, bad_verdict in (
+        ("non-yes/no string", "non-yes-no-string", "maybe"),
+        ("explicit null", "explicit-null", None),
+        ("boolean", "boolean", True),
+    ):
+        payload = _json.loads(_json.dumps(base_payload))
+        payload["verdict"] = bad_verdict
+        result = validate_staging_file(
+            stage(f"verdict-{verdict_slug}", payload, base_md),
+            hard=True,
+        )
+        check(
+            f"v1 contract: version-1 verdict {verdict_name} "
+            "fails hard with the named error",
+            not result.ok
+            and any(
+                "field 'verdict' must be 'yes' or 'no'" in e for e in result.errors
+            ),
+        )
 
     # Explicit unsupported versions (F1/F7): an explicit ``null`` (presence,
     # not value) and an explicit future version (2) are both ``unsupported``,
@@ -5232,6 +5477,48 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
         ).ok,
     )
 
+    # r7 F1 twin: the parseable-disagreement direction. The same r6 F1
+    # blocking_payload (sidecar blocking true) paired with Markdown whose
+    # Blocking bullet is PRESENT and `false` (base_md) must fail hard with
+    # the blocking disagreement error — a directional rewrite of the
+    # comparison that drops this arm would silently reopen the fail-open
+    # readiness hole the r6 fix closed.
+    r7_f1_result = validate_staging_file(
+        stage("r7-f1-blocking-disagrees", blocking_payload, base_md), hard=True
+    )
+    check(
+        # Single contiguous literal: the plan's validation grep matches this
+        # exact phrase in the source.
+        "v1 contract: sidecar blocking true — blocking disagrees with a parseable Markdown Blocking bullet — fails hard (r7 F1)",
+        not r7_f1_result.ok
+        and any("blocking disagrees" in e for e in r7_f1_result.errors),
+    )
+
+    # r7 F2 twin: sidecar blocking FALSE (the base payload) with an
+    # unparseable Markdown Blocking bullet (fenced inside the metadata
+    # region) stays silent — no no-parseable-Blocking error and no
+    # disagreement error — pinning that the r6 F1 arm fires only for
+    # sidecar-true.
+    r7_f2_fenced_md = _version1_markdown().replace(
+        "- **Blocking**: false",
+        "```\n- **Blocking**: false\n```",
+        1,
+    )
+    r7_f2_result = validate_staging_file(
+        stage("r7-f2-blocking-fenced-false", base_payload, r7_f2_fenced_md),
+        hard=True,
+    )
+    check(
+        # Single contiguous literal: the plan's validation grep matches this
+        # exact phrase in the source.
+        "v1 contract: sidecar blocking false with an unparseable Markdown Blocking bullet stays silent (r7 F2)",
+        r7_f2_result.ok
+        and not any(
+            "no parseable Blocking value" in e for e in r7_f2_result.errors
+        )
+        and not any("blocking disagrees" in e for e in r7_f2_result.errors),
+    )
+
     # r6 F2: a non-dict findings entry must produce the targeted
     # finding-must-be-an-object error with no AttributeError traceback from
     # the order check's sort (assert via the returned result, which a crash
@@ -5267,9 +5554,7 @@ def run_selftest() -> int:
             ("full_panel_completion", _selftest_full_panel_completion),
             ("readiness_independence", _selftest_readiness_independence),
             ("producer_artifacts", _selftest_producer_artifacts),
-            ("source_plan_cli", _selftest_source_plan_cli),
-            ("source_rfc_cli", _selftest_source_rfc_cli),
-            ("source_doc_cli", _selftest_source_doc_cli),
+            ("source_cli", _selftest_source_cli),
             ("discarded_header_skip", _selftest_discarded_header_skip),
             ("versioned_schema_and_patterns", _selftest_versioned_schema_and_patterns),
         ):
@@ -5347,11 +5632,8 @@ def main(argv: list[str] | None = None) -> int:
     # below uses truthiness, so an empty expansion (e.g. a shell wrapper
     # invoking the flag with an unset variable) was silently treated as "flag
     # not supplied", disabling the stale-digest freshness gate with exit 0.
-    for flag_name, flag_value in (
-        ("--source-plan", args.source_plan),
-        ("--source-rfc", args.source_rfc),
-        ("--source-doc", args.source_doc),
-    ):
+    for flag_name, dest, _kind in _SOURCE_FLAG_TABLE:
+        flag_value = getattr(args, dest)
         if flag_value is not None and not flag_value.strip():
             parser.error(
                 f"{flag_name} value must not be empty; an empty value would "
@@ -5381,35 +5663,32 @@ def main(argv: list[str] | None = None) -> int:
 
     expected_digest: str | None = None
     source_kind: str | None = None
+    source_path: Path | None = None
     source_flag_name: str | None = None  # for the stale-digest error hint
-    supplied_source_flags = [
-        flag
-        for flag in (args.source_plan, args.source_rfc, args.source_doc)
-        if flag
+    supplied = [
+        (flag_name, dest, kind)
+        for flag_name, dest, kind in _SOURCE_FLAG_TABLE
+        if getattr(args, dest)
     ]
-    if len(supplied_source_flags) > 1:
+    if len(supplied) > 1:
+        # F4 (r5): derive the enumeration from the table so a new kind
+        # registered in _SOURCE_FLAG_TABLE is reported here without a
+        # second sync point. The terminal "and" is restored per the
+        # 2026-09-05 backlog item; the wording is byte-identical to
+        # pre-c341e07.
+        flags = [f for f, _d, _k in _SOURCE_FLAG_TABLE]
         parser.error(
-            "--source-plan, --source-rfc, and --source-doc are mutually "
-            "exclusive"
+            f"{', '.join(flags[:-1])}, and {flags[-1]} "
+            "are mutually exclusive"
         )
-    if args.source_plan:
-        source_kind = "plan"
-        source_path = Path(args.source_plan).expanduser().resolve()
-        source_flag_name = "--source-plan"
-    elif args.source_rfc:
-        # --source-rfc: RFC reviews. The digest recipe is byte-identical to
-        # --source-plan (plain SHA-256 of the file bytes); a separate flag keeps
-        # the sidecar's source_kind type-checked against the flag used.
-        source_kind = "rfc"
-        source_path = Path(args.source_rfc).expanduser().resolve()
-        source_flag_name = "--source-rfc"
-    elif args.source_doc:
-        # --source-doc (r4 F4): generic document reviews. Same recipe and
-        # rationale as --source-rfc; without this flag a document-kind sidecar
-        # could never receive a digest freshness check via the CLI.
-        source_kind = "document"
-        source_path = Path(args.source_doc).expanduser().resolve()
-        source_flag_name = "--source-doc"
+    # F12: the routing is table-driven. The digest recipe is byte-identical
+    # across the three flags (plain SHA-256 of the file bytes); the separate
+    # flags keep the sidecar's source_kind type-checked against the flag used
+    # (--source-doc additionally lets document-kind sidecars get a CLI digest
+    # freshness check at all, r4 F4).
+    if supplied:
+        source_flag_name, dest, source_kind = supplied[0]
+        source_path = Path(getattr(args, dest)).expanduser().resolve()
 
     if source_kind is not None:
         if not source_path.is_file():
