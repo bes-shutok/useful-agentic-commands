@@ -120,9 +120,9 @@ Files:
 - `agents/skills/receiving-review/SKILL.md`
 - `agents/skills/execute-plan/subagent-prompts.md`
 
-- [ ] In review-staging's skill-consumer table, extend the `receiving-review` row's contract cell to add, after the Blocking re-evaluation clause: "A returned-for-ask record is NOT a Status or Triage value: record the literal marker `returned-for-ask` on the finding's Analysis section (with the question to relay); Status and Triage stay `pending` and the Blocking value is unchanged until the user decides." This row is the single definition; do not restate the form elsewhere.
-- [ ] In receiving-review's Fix-risk closing paragraph, extend the clause "until answered, the finding stays `pending`" to "until answered, the finding stays `pending` and is recorded as returned-for-ask per review-staging's receiving-review consumer row" so the provider points at the single definition.
-- [ ] In execute-plan subagent-prompts step 7, extend the exception clause "record it as returned-for-ask, not backlogged" to "record it as returned-for-ask per review-staging's receiving-review consumer row, not backlogged" so the call site points at the single definition.
+- [x] In review-staging's skill-consumer table, extend the `receiving-review` row's contract cell to add, after the Blocking re-evaluation clause: "A returned-for-ask record is NOT a Status or Triage value: record the literal marker `returned-for-ask` on the finding's Analysis section (with the question to relay); Status and Triage stay `pending` and the Blocking value is unchanged until the user decides." This row is the single definition; do not restate the form elsewhere.
+- [x] In receiving-review's Fix-risk closing paragraph, extend the clause "until answered, the finding stays `pending`" to "until answered, the finding stays `pending` and is recorded as returned-for-ask per review-staging's receiving-review consumer row" so the provider points at the single definition.
+- [x] In execute-plan subagent-prompts step 7, extend the exception clause "record it as returned-for-ask, not backlogged" to "record it as returned-for-ask per review-staging's receiving-review consumer row, not backlogged" so the call site points at the single definition.
 
 ### Task 2: Align the exception scope to the canonical phrase at all four sites
 
@@ -131,8 +131,8 @@ Files:
 - `agents/skills/execute-plan/SKILL.md`
 - `agents/skills/execute-plan/subagent-prompts.md`
 
-- [ ] In receiving-review's Backlog capture exception, replace the narrow shield "a must-stay-blocking finding held for the fix-risk user decision ... stays `pending` and is recorded as returned-for-ask, not backlogged" with the canonical scope phrase: "a finding held `pending` for the fix-risk user decision (**Fix-risk triage when fixes regenerate findings**) is recorded as returned-for-ask per review-staging's receiving-review consumer row, not backlogged"; keep the trailing "once the user decides, apply this section to it" sentence unchanged.
-- [ ] Confirm execute-plan Step 3.3 verification gate #4 and subagent-prompts step 7 already carry the canonical scope phrase verbatim; adjust only if wording drifted, keeping the exact string "a finding held `pending` for the fix-risk user decision" present in both files.
+- [x] In receiving-review's Backlog capture exception, replace the narrow shield "a must-stay-blocking finding held for the fix-risk user decision ... stays `pending` and is recorded as returned-for-ask, not backlogged" with the canonical scope phrase: "a finding held `pending` for the fix-risk user decision (**Fix-risk triage when fixes regenerate findings**) is recorded as returned-for-ask per review-staging's receiving-review consumer row, not backlogged"; keep the trailing "once the user decides, apply this section to it" sentence unchanged.
+- [x] Confirm execute-plan Step 3.3 verification gate #4 and subagent-prompts step 7 already carry the canonical scope phrase verbatim; adjust only if wording drifted, keeping the exact string "a finding held `pending` for the fix-risk user decision" present in both files.
 
 ### Task 3: Mandate the ask before the next fold
 
@@ -140,15 +140,15 @@ Files:
 - `agents/skills/execute-plan/SKILL.md`
 - `agents/skills/review-loop/SKILL.md`
 
-- [ ] Add a new item to the Step 3.3 verification gate (after the current item 5): "A returned-for-ask presentation is outstanding only until it is discharged: an interactive run performs the fix-risk ask before returning to Step 3.1 (the Step 3.5 counter update waits for the answer, or takes the fix-risk stop row); a non-interactive run returns the question to its orchestrator or stops for direction per the Fix-risk section, and never increments its round with the ask outstanding."
-- [ ] In review-loop orchestration rule 4 (Fix-risk triage before more folding), append: "A returned-for-ask presentation outstanding is a stop for user direction: relay the ask and get the answer before the next fold or iteration; the loop never increments its round with the ask outstanding."
-- [ ] Check no sibling paragraph (Step 3.5 launch paragraph, Hard Gate 17 bullet) contradicts the new obligation; if one reads as permitting a round increment with the ask outstanding, reconcile its wording in the same commit.
+- [x] Add a new item to the Step 3.3 verification gate (after the current item 5): "A returned-for-ask presentation is outstanding only until it is discharged: an interactive run performs the fix-risk ask before returning to Step 3.1 (the Step 3.5 counter update waits for the answer, or takes the fix-risk stop row); a non-interactive run returns the question to its orchestrator or stops for direction per the Fix-risk section, and never increments its round with the ask outstanding."
+- [x] In review-loop orchestration rule 4 (Fix-risk triage before more folding), append: "A returned-for-ask presentation outstanding is a stop for user direction: relay the ask and get the answer before the next fold or iteration; the loop never increments its round with the ask outstanding."
+- [x] Check no sibling paragraph (Step 3.5 launch paragraph, Hard Gate 17 bullet) contradicts the new obligation; if one reads as permitting a round increment with the ask outstanding, reconcile its wording in the same commit.
 
 ### Task 4: Validate and commit
 
 Files: none new.
 
-- [ ] Run the full Validation Commands block; expect exit 0 ("ALL VALIDATION CHECKS PASS"). Before running, confirm each check is RED-today against the pre-edit tree for the sites this plan changes (authoring-time evidence: canonical phrase absent from receiving-review; record definition absent from review-staging; outstanding-ask wording absent from execute-plan and review-loop; the Fix-risk closing pin 'stays `pending` and is recorded as returned-for-ask per review-staging' is RED-today because today's matching Backlog capture sentence ends "returned-for-ask, not backlogged" with no review-staging pointer; forbidden sweep matches receiving-review today).
-- [ ] Run `bash -n` over the Validation Commands block and run a pin-vs-prescription audit: for each pinned span in the Validation Commands, verify it occurs in the prescribed task text (occurrences inside the Validation Commands block itself are the checker's own literals and do not count toward the audit).
-- [ ] Run the public hygiene scan (exit 0 required).
-- [ ] Stage ONLY this plan's files (the five skill files plus this plan); leave the foreign modified `scripts/plan_readiness.py` unstaged. Commit: `skills: complete returned-for-ask semantics (scope, record, pre-fold ask gate)`
+- [x] Run the full Validation Commands block; expect exit 0 ("ALL VALIDATION CHECKS PASS"). Before running, confirm each check is RED-today against the pre-edit tree for the sites this plan changes (authoring-time evidence: canonical phrase absent from receiving-review; record definition absent from review-staging; outstanding-ask wording absent from execute-plan and review-loop; the Fix-risk closing pin 'stays `pending` and is recorded as returned-for-ask per review-staging' is RED-today because today's matching Backlog capture sentence ends "returned-for-ask, not backlogged" with no review-staging pointer; forbidden sweep matches receiving-review today).
+- [x] Run `bash -n` over the Validation Commands block and run a pin-vs-prescription audit: for each pinned span in the Validation Commands, verify it occurs in the prescribed task text (occurrences inside the Validation Commands block itself are the checker's own literals and do not count toward the audit).
+- [x] Run the public hygiene scan (exit 0 required).
+- [x] Stage ONLY this plan's files (the five skill files plus this plan); leave the foreign modified `scripts/plan_readiness.py` unstaged. Commit: `skills: complete returned-for-ask semantics (scope, record, pre-fold ask gate)`

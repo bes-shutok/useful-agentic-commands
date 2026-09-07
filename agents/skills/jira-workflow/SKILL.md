@@ -9,6 +9,7 @@ description: "Jira workflow for creating/updating Jira stories and creating git 
 - Keep scope at the requested service level (not program-wide).
 - Use forward-looking sections (for example scope/out-of-scope).
 - Limit body to business-relevant scope and main dev points; keep Jira story descriptions business-facing and move detailed technical implementation content into comments or linked docs.
+- Make deliverables and acceptance criteria observable by the team that owns the ticket. Treat requester capabilities that are already confirmed as context or preconditions, not acceptance criteria, and omit generic non-impact statements unless the ticket assigns an explicit regression check.
 - For rollout or verification tickets, keep the issue body focused on the outcome to verify; put environment-specific manual test procedures and tactical technical caveats in comments, not in the main description.
 - Avoid retrospective phrasing.
 - When a user wants a ticket to stand on its own, describe the substance of the change directly instead of relying on rollout labels or phase names as shorthand.

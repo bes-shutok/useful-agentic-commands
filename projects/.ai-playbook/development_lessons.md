@@ -5677,3 +5677,35 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** while adding a fold-5 pin to an archived plan's validation block, the review caught that the block's `PL_DOC` and its self-extraction `PLAN_FILE` still pointed at pre-archive paths of two sibling plans archived in an intervening execution; the planned edit pinned only `PL_DOC`, and the block would have aborted on `awk` (exit 2) while the plan claimed an end-to-end green. The blocking round-one finding was exactly the un-swept sibling anchor.
 
 **See also:** #72 (verify plan-time claims against actual source before depending on them - the general anchor-verification rule this specializes).
+
+## 304. A Behavioral Rule Shared by Multiple Skills Is Defined Once and Referenced by Pointer, Not Restated
+
+**Principle:** Family D (single source of truth)
+
+**Trigger:** You are editing a skill file and find yourself writing out the full semantics of a protocol or rule that another skill already defines (a stop/discharge split, a state machine, a gate ordering) instead of referencing it.
+
+**Rule:** When a behavioral rule must be visible from more than one skill, keep the full definition in exactly one owning file; every other skill references it by pointer (file + step/section), with at most a compact one-sentence summary. If a summary is kept, pin its key span with a validation grep so drift is mechanically caught. Do not maintain two full statements of the same semantics in sibling skills, even when they agree today.
+
+**Why:** Full restatements drift independently. Over two review rounds of a skill-semantics plan, a discharge/stop split was stated in three skills (orchestrator gate, loop rule, review-reception section); each statement was locally plausible but they disagreed on which run mode stops versus records, and reviews re-found the contradiction every round until a reconciliation merged them into one authoritative definition plus pointers. Fixing the wording of each copy (the #106 propagate-the-correction approach) would have left three copies to drift again; removing the copies is the preventive fix.
+
+**Shape:** Review rounds repeatedly flag self-tension between two files that each describe the same protocol; or a fix in one file is followed by a "the sibling still says otherwise" finding next round.
+
+**Example:** An orchestration loop's round-control rule restated a returned-question discharge split that the orchestrator gate and the review-reception skill already owned; the restatement disagreed on the non-interactive path. Fix: replace the restated sentence with a pointer to the owning definition, keep the pinned invariant span ("the loop never increments its round with the ask outstanding") verbatim.
+
+**Distinguishing from #106:** #106 fires after a rule changes and prescribes propagating the correction to every echoing surface. This lesson fires at authoring time and prescribes eliminating the echo: the surface should never have carried a full copy, so the "correction" is a pointer, not a parallel edit.
+
+**See also:** #106 (stale-echo propagation, the reactive dual), #181 (rename drift among gold source, consumers, and gates), `agent_workflow_guidelines.md` (cross-skill integration pointers).
+
+## 305. Plan Invariants Must Not Pin Volatile Working-Tree State From Concurrent Sessions
+
+**Principle:** Family H (verify the real thing)
+
+**Trigger:** You are writing a plan task or validation invariant on a branch where parallel agent sessions work concurrently, and the invariant asserts a snapshot of another session's working tree (specific files dirty or uncommitted, a peer's in-flight document state).
+
+**Rule:** Anchor scope and safety invariants to recorded refs and this plan's own actions, never to another session's mutable tree state: record the base sha before the first task commit and check `git log --name-only <base>..HEAD` against this plan's declared file lists; bind no check to files the plan does not own. A peer committing or reworking its own files mid-execution and mid-review is expected and harmless.
+
+**Why:** A plan invariant required three peer files to remain "modified and uncommitted"; the peer legitimately committed them while the plan sat in its review loop, and the next blind review round flagged the check as unsatisfiable as written (blocking). Static snapshots of shared mutable state are stale on arrival; the plan's own commit boundary is the only stable surface it can verify.
+
+**Example:** Replace "git status shows X, Y, Z still modified and uncommitted" with: "with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` equals the union of the task Files lists; no path outside the declared lists was staged, committed, or reverted."
+
+**See also:** the plans skill Validation Commands authoring rules (volatile-state rule), #181 (rename drift among gold source, consumers, and gates).

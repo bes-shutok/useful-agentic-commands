@@ -480,6 +480,8 @@ Every plan must include a `## Validation Commands` fenced bash block (see plan t
 
 30. **Derive mutation-probe failing sets empirically, not by prediction:** when a task prescribes a temporary mutation probe with an expected failing-test set, sweep the whole selector for every assertion that observes the mutated call, including PRE-EXISTING witnesses in sibling tests, or execute the probe once at authoring time and paste the observed set. A prediction scoped to the asserts the new test adds misses siblings the selector already runs, and the probe's RED expectation is wrong on arrival (witness: a guard plan's probe predicted two failing tests while an unconditional probe call also tripped the policy-only sibling's pre-existing transport witness; the r1 reviewer found it by execution).
 
+31. **Never pin volatile working-tree state in task gates:** an invariant that asserts another session's mutable tree state (specific files still dirty or uncommitted, a peer's in-flight doc) is stale on arrival when parallel sessions share the branch; peers legitimately commit and rework their own files mid-execution and mid-review. Anchor scope-integrity checks to a base sha recorded before the first task commit and verify `git log --name-only <base>..HEAD` against this plan's own declared file lists instead (see user-level lesson #305).
+
 ## Plan Quality Gate
 
 Before finalizing a new or updated plan, run the `review-plan` skill as a sub-agent:

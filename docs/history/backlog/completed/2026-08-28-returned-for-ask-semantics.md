@@ -1,6 +1,6 @@
 # Backlog: Returned-for-ask semantics completion (fix-risk deferred)
 
-Status: backlog
+Status: done
 Workflow: pre-plan (promote via `plans` skill when scheduled)
 
 ## Problem
