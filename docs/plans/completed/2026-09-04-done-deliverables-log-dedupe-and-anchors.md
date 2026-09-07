@@ -138,6 +138,8 @@ echo "VALIDATION OK"
 
 ### Task 1: done Step 0 writes the per-run start marker
 
+*Post-archive annotation (2026-09-06): the Step 0 snippet evolved during Phase 3 review rounds (r1: REPO_TOP resolution, the $REPO_TOP-anchored fallback, the MARKER variable, the printf echo; r2: head -n 1 and the case "$TMP_DIR" relative-path anchor; 2026-09-06 wording-trio plan: the content-bearing marker line). The verbatim/four-lines claim in the checklist text reflects authoring time, not the final snippet. Post-archive annotation addendum (2026-09-07, wording-trio review r1 F2): the `write an empty per-run marker file` probe in the frozen Validation Commands block below reflects the pre-2026-09-06 wording and no longer passes against the current tree (the wording-trio plan reworded `empty` to `content-bearing`); a failed re-run of that frozen block at this probe is expected stale-wording, not tree drift.*
+
 Files:
 - `agents/skills/done/SKILL.md`
 
@@ -196,3 +198,33 @@ Files:
 - [x] Run the full Validation Commands block from the repo root → expect exit 0 with `VALIDATION OK`
 - [x] `bash -n` over the Validation Commands block → expect exit 0
 - [x] Mechanical pin audit (rule 22): for each pinned fragment in the Validation Commands block, `grep -cF` on `agents/skills/done/SKILL.md` returns exactly 1 for the single-site obligation probes (`immediately after the lock is acquired, write an empty per-run marker file`, `or its modification time falls inside the session window`, `apply conservative gating and treat every`, `anchor is the newest`, `any other skill or tool that mutates a plan file`, `binding agent commit hygiene; see Step 3 item 0b`) and at least 1 for the multi-site probes (`run-start-`, `written by a previous done run`, `does not anchor its own window`), and returns 0 for every forbidden pattern (the two 4c probes case-insensitively); fix both sides of any mismatch in the same edit
+
+## Post-archive addendum (2026-09-06): run-start marker probe pins
+
+Added by the wording-trio plan for backlog 2026-09-06-done-run-start-probe-coverage (r1-r4 probe literals; the original Validation Commands block stays frozen; counts re-measured at authoring). Run from the repo root.
+
+```bash
+F=agents/skills/done/SKILL.md
+fail() { echo "FAIL: $1"; exit 1; }
+[ -f "$F" ] || fail "done SKILL.md missing"
+grep -Fq 'mkdir -p "${TMP_DIR%/}/done-session"' "$F" || fail "snippet mkdir line"
+grep -Fq 'run-start-$(date -u +%Y%m%dT%H%M%SZ)' "$F" || fail "marker filename literal"
+grep -Fq 'MARKER="$(cd "$(dirname "$MARKER")" && pwd)/$(basename "$MARKER")"' "$F" || fail "canonicalization line"
+# the sed literal is pinned as two fixed fragments (shell-quoting the whole line would need embedded single-quote escapes)
+grep -Fq 's/^tmp_dir = ["' "$F" || fail "sed literal head"
+grep -Fq '\1/p' "$F" || fail "sed literal tail"
+grep -Fq "matches no marker at gate time" "$F" || fail "echo-loss canonical statement"
+grep -Fq "Keep the echoed marker path in chat context" "$F" || fail "marker-echo chat-context sentence"
+grep -Fq "apply the Step 0 echo-loss fallback" "$F" || fail "Step 1.5 back-reference"
+grep -Fq "never substitute the newest on-disk marker" "$F" || fail "never-recency clause"
+grep -Fq 'prune no `run-start-*` markers this run' "$F" || fail "Step 2.62 prune-skip clause"
+grep -Fq "prunes no" "$F" || fail "Step 0 canonical prune clause"
+grep -Fq "NEVER remove the newest previous-run marker" "$F" || fail "never-delete pruning"
+grep -Fq "create the directory if missing" "$F" || fail "directory creation"
+grep -Fq 'excluding `{plans_completed_dir}`' "$F" || fail "producer scope exclusion"
+grep -Fq "remove every line listing that path" "$F" || fail "removal rule"
+grep -Fq "one repo-relative path per line" "$F" || fail "repo-relative path form"
+grep -Fq 'head -n 1' "$F" || fail "r2 head -n 1"
+grep -Fq 'case "$TMP_DIR"' "$F" || fail "r2 relative-path anchor"
+echo "ADDENDUM PROBES OK"
+```

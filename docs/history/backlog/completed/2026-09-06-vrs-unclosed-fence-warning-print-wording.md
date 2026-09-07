@@ -1,6 +1,6 @@
 # Backlog: reword stale "may print it more than once" claim in the unclosed-fence warning
 
-- **Status:** open
+Status: done
 - **Origin:** execute-plan r1 code review F4 (branch 2026-09-06-validator-pass-r4-residuals), finding F4 (correctness-completeness, implementation#stale-warning-wording)
 - **File:** `scripts/validate_review_staging.py` `parse_markdown_findings` unclosed-fence warning literal (anchor `# unclosed-fence-warning` in the selftest)
 

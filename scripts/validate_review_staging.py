@@ -670,7 +670,7 @@ def parse_markdown_findings(
                 "resets, but post-opener metadata bullets are not recovered; "
                 "this warning repeats once per parsing pass of the Findings "
                 "section, so a full validation run may "
-                "print it more than once"
+                "report it more than once"
             )
         # Both apply_events call sites seed the severity from literal None:
         # state is re-derived inside apply_events. The reset pass below seeds
@@ -4609,7 +4609,7 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
             "resets, but post-opener metadata bullets are not recovered; "
             "this warning repeats once per parsing pass of the Findings "
             "section, so a full validation run may "
-            "print it more than once"
+            "report it more than once"
         )
         and sorted(f["id"] for f in parsed_warn) == [1, 2]
         and next(

@@ -104,6 +104,7 @@ grep -Fq "content-bearing per-run marker file" "$S" || fail "reworded content-be
 grep -Fq '$(date -u +%s) ${REPO_TOP%/} $$' "$S" || fail "content-bearing marker literal missing"
 grep -Fq "The marker is content-bearing" "$S" || fail "content-bearing prose missing"
 grep -Fq "content-match confirmation" "$S" || fail "content-match confirmation prose missing"
+grep -Fq "everything between them is the repo root" "$S" || fail "marker field-order clause missing"
 grep -Fq "This rule is the Step 0 echo-loss fallback" "$S" || fail "echo-loss label missing"
 grep -Fq "cross-repo done run" "$S" || fail "cross-repo acknowledgment missing"
 grep -Fq "confirm its identity from its content" "$S" || fail "gate content confirmation missing"
@@ -147,12 +148,12 @@ Authoring-time measurements (2026-09-06, pre-change tree): the stale-wording swe
 Files:
 - `scripts/validate_review_staging.py`
 
-- [ ] RED: in the selftest check whose full name begins `fence fix: unclosed fence warning passed once to the warn callback` (the `warns[0] ==` full-text equality pin; the other `(# unclosed-fence-warning)` check, the default silent-stderr one, is NOT touched), replace the tail fragment `"so a full validation run may "` `"print it more than once"` with `"so a full validation run may "` `"report it more than once"`; given the emit site still reads `print it more than once`, expects exactly that check to fail while all other selftest checks stay green
-- [ ] Run → expect RED: `python3 scripts/validate_review_staging.py --selftest` (fails the `fence fix: unclosed fence warning passed once to the warn callback...` check only)
-- [ ] GREEN: in `parse_markdown_findings`, in the `warn(...)` message for the unclosed-fence fallback, replace `print it more than once` with `report it more than once`; change nothing else in the message
-- [ ] Run → expect GREEN: `python3 scripts/validate_review_staging.py --selftest`
-- [ ] Interim probes: `grep -cF "print it more than once" scripts/validate_review_staging.py` prints 0; `grep -cF "report it more than once" scripts/validate_review_staging.py` prints 2
-- [ ] Commit: `fix: unclosed-fence warning tail names the warn-callback transport`
+- [x] RED: in the selftest check whose full name begins `fence fix: unclosed fence warning passed once to the warn callback` (the `warns[0] ==` full-text equality pin; the other `(# unclosed-fence-warning)` check, the default silent-stderr one, is NOT touched), replace the tail fragment `"so a full validation run may "` `"print it more than once"` with `"so a full validation run may "` `"report it more than once"`; given the emit site still reads `print it more than once`, expects exactly that check to fail while all other selftest checks stay green
+- [x] Run → expect RED: `python3 scripts/validate_review_staging.py --selftest` (fails the `fence fix: unclosed fence warning passed once to the warn callback...` check only)
+- [x] GREEN: in `parse_markdown_findings`, in the `warn(...)` message for the unclosed-fence fallback, replace `print it more than once` with `report it more than once`; change nothing else in the message
+- [x] Run → expect GREEN: `python3 scripts/validate_review_staging.py --selftest`
+- [x] Interim probes: `grep -cF "print it more than once" scripts/validate_review_staging.py` prints 0; `grep -cF "report it more than once" scripts/validate_review_staging.py` prints 2
+- [x] Commit: `fix: unclosed-fence warning tail names the warn-callback transport`
 
 ### Task 2: done run-start marker content identity, cross-repo acknowledgment, echo-loss naming
 
@@ -161,21 +162,21 @@ Files:
 
 All edits are additive; no existing sentence or snippet line is deleted, with ONE prescribed exception: the Step 0 prose word `empty` is reworded to `content-bearing` in the checklist item below (the stale `empty` wording would contradict the content-bearing marker and break content-match confirmation). The Step 0 snippet line `: > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"` is the only line replaced.
 
-- [ ] Step 0 snippet: replace `: > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"` with `printf '%s\n' "$(date -u +%s) ${REPO_TOP%/} $$" > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"`
-- [ ] Step 0 prose (the run-start marker paragraph): reword `write an empty per-run marker file` to `write a content-bearing per-run marker file`, then append after `Marker pruning is governed solely by the Step 2.62 sweep.` the sentence `The marker is content-bearing: its single line records the creation epoch, the resolved \`$REPO_TOP\`, and the writing shell PID, so gate-time identity can rely on content-match confirmation instead of chat recall alone.`
-- [ ] Step 0 prose (the paragraph beginning `Keep the echoed marker path in chat context`): append at the end, after `never guess by recency.`, the sentence `This rule is the Step 0 echo-loss fallback that Step 1.5 back-references.`
-- [ ] Step 1.5 prose: inside the anchor parenthetical, immediately after `never substitute the newest on-disk marker` and before `; the window runs from the anchor marker's timestamp to gate time`, insert `; when the echoed marker file exists, confirm its identity from its content (the recorded \`$REPO_TOP\` must equal this repo's resolved repo root); recorded content naming a different repository is a cross-repo done run: the starting repo's marker cannot anchor this repo's window, so this repo's gate deterministically lands in the conservative-gating branch (expected and named for a secondary repo; the gate still names every gated plan and never silently skips one)`
-- [ ] Step 2.62 prose: after `(never guess by recency).` in the `done-session/` bullet, append `Confirm the recalled current-run marker from its content the same way: a recorded \`$REPO_TOP\` matching this repo plus the run-unique epoch and PID identify the current run's marker; a content mismatch applies the same no-prune rule as a lost echo.`
-- [ ] Characterization (must stay true, enforced by the survival pins): the mkdir line, the marker filename literal, the canonicalization line, the canonical echo-loss statement, the Step 1.5 back-reference and never-recency clause, both prune clauses, the never-delete pruning, directory-creation, producer-scope, removal-rule, repo-relative, `head -n 1`, and `case "$TMP_DIR"` wordings are all unchanged
-- [ ] Interim probes (each must print at least 1): `grep -cF '$(date -u +%s) ${REPO_TOP%/} $$' agents/skills/done/SKILL.md`, `grep -cF "cross-repo done run" agents/skills/done/SKILL.md`, `grep -cF "This rule is the Step 0 echo-loss fallback" agents/skills/done/SKILL.md`, `grep -cF "a content mismatch applies the same no-prune rule" agents/skills/done/SKILL.md`; and the survival probe `grep -cF "matches no marker at gate time" agents/skills/done/SKILL.md` still prints 1
-- [ ] Commit: `skills: done run-start marker content identity and cross-repo gating acknowledgment`
+- [x] Step 0 snippet: replace `: > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"` with `printf '%s\n' "$(date -u +%s) ${REPO_TOP%/} $$" > "$MARKER" && printf 'run-start marker: %s\n' "$MARKER"`
+- [x] Step 0 prose (the run-start marker paragraph): reword `write an empty per-run marker file` to `write a content-bearing per-run marker file`, then append after `Marker pruning is governed solely by the Step 2.62 sweep.` the sentence `The marker is content-bearing: its single line records the creation epoch, the resolved \`$REPO_TOP\`, and the writing shell PID, so gate-time identity can rely on content-match confirmation instead of chat recall alone.`
+- [x] Step 0 prose (the paragraph beginning `Keep the echoed marker path in chat context`): append at the end, after `never guess by recency.`, the sentence `This rule is the Step 0 echo-loss fallback that Step 1.5 back-references.`
+- [x] Step 1.5 prose: inside the anchor parenthetical, immediately after `never substitute the newest on-disk marker` and before `; the window runs from the anchor marker's timestamp to gate time`, insert `; when the echoed marker file exists, confirm its identity from its content (the recorded \`$REPO_TOP\` must equal this repo's resolved repo root); recorded content naming a different repository is a cross-repo done run: the starting repo's marker cannot anchor this repo's window, so this repo's gate deterministically lands in the conservative-gating branch (expected and named for a secondary repo; the gate still names every gated plan and never silently skips one)`
+- [x] Step 2.62 prose: after `(never guess by recency).` in the `done-session/` bullet, append `Confirm the recalled current-run marker from its content the same way: a recorded \`$REPO_TOP\` matching this repo plus the run-unique epoch and PID identify the current run's marker; a content mismatch applies the same no-prune rule as a lost echo.`
+- [x] Characterization (must stay true, enforced by the survival pins): the mkdir line, the marker filename literal, the canonicalization line, the canonical echo-loss statement, the Step 1.5 back-reference and never-recency clause, both prune clauses, the never-delete pruning, directory-creation, producer-scope, removal-rule, repo-relative, `head -n 1`, and `case "$TMP_DIR"` wordings are all unchanged
+- [x] Interim probes (each must print at least 1): `grep -cF '$(date -u +%s) ${REPO_TOP%/} $$' agents/skills/done/SKILL.md`, `grep -cF "cross-repo done run" agents/skills/done/SKILL.md`, `grep -cF "This rule is the Step 0 echo-loss fallback" agents/skills/done/SKILL.md`, `grep -cF "a content mismatch applies the same no-prune rule" agents/skills/done/SKILL.md`; and the survival probe `grep -cF "matches no marker at gate time" agents/skills/done/SKILL.md` still prints 1
+- [x] Commit: `skills: done run-start marker content identity and cross-repo gating acknowledgment`
 
 ### Task 3: post-archive probe addendum in the archived deliverables-log plan
 
 Files:
 - `docs/plans/completed/2026-09-04-done-deliverables-log-dedupe-and-anchors.md`
 
-- [ ] Append at the end of the file the section `## Post-archive addendum (2026-09-06): run-start marker probe pins` with this intro line and this exact fenced block:
+- [x] Append at the end of the file the section `## Post-archive addendum (2026-09-06): run-start marker probe pins` with this intro line and this exact fenced block:
 
     Intro: `Added by the wording-trio plan for backlog 2026-09-06-done-run-start-probe-coverage (r1-r4 probe literals; the original Validation Commands block stays frozen; counts re-measured at authoring). Run from the repo root.`
 
@@ -205,10 +206,10 @@ Files:
     echo "ADDENDUM PROBES OK"
     ```
 
-- [ ] Under the Task 1 heading in the same archived plan, append this dated annotation line (italic, directly after the heading): `*Post-archive annotation (2026-09-06): the Step 0 snippet evolved during Phase 3 review rounds (r1: REPO_TOP resolution, the $REPO_TOP-anchored fallback, the MARKER variable, the printf echo; r2: head -n 1 and the case "$TMP_DIR" relative-path anchor; 2026-09-06 wording-trio plan: the content-bearing marker line). The verbatim/four-lines claim in the checklist text reflects authoring time, not the final snippet.*`
-- [ ] Run the addendum block from the repo root → expect `ADDENDUM PROBES OK` (every addendum literal pins a pre-existing skill wording, so all are on disk once Task 2 has landed; Task 2's new obligations are pinned by the main Validation Commands block, not by the addendum)
-- [ ] No other byte of the archived plan changes
-- [ ] Commit: `docs: post-archive probe addendum for done run-start marker behaviors`
+- [x] Under the Task 1 heading in the same archived plan, append this dated annotation line (italic, directly after the heading): `*Post-archive annotation (2026-09-06): the Step 0 snippet evolved during Phase 3 review rounds (r1: REPO_TOP resolution, the $REPO_TOP-anchored fallback, the MARKER variable, the printf echo; r2: head -n 1 and the case "$TMP_DIR" relative-path anchor; 2026-09-06 wording-trio plan: the content-bearing marker line). The verbatim/four-lines claim in the checklist text reflects authoring time, not the final snippet.*`
+- [x] Run the addendum block from the repo root → expect `ADDENDUM PROBES OK` (every addendum literal pins a pre-existing skill wording, so all are on disk once Task 2 has landed; Task 2's new obligations are pinned by the main Validation Commands block, not by the addendum)
+- [x] No other byte of the archived plan changes
+- [x] Commit: `docs: post-archive probe addendum for done run-start marker behaviors`
 
 ### Task 4: archive backlog origins and final validation
 
@@ -217,8 +218,20 @@ Files:
 - `docs/history/backlog/2026-09-06-done-run-start-probe-coverage.md` *(moved)*
 - `docs/history/backlog/2026-09-06-vrs-unclosed-fence-warning-print-wording.md` *(moved)*
 
-- [ ] `git mv` each of the three backlog files to `docs/history/backlog/completed/` and set `Status: done` in the same edit (no prose rewording; note the vrs origin's status line is the bold `- **Status:** open` form: replace that whole line with the plain `Status: done`)
-- [ ] Run the full Validation Commands block from the repo root → expect exit 0 with `VALIDATION OK`
-- [ ] `bash -n` over the Validation Commands block → expect exit 0
-- [ ] Mechanical pin audit: for every pinned fragment in the Validation Commands block, `grep -cF` on its target file returns at least 1 for positive pins and the stale-wording sweep returns 0; fix both sides of any mismatch in the same edit
-- [ ] Commit: `backlog: complete done-skill/validator wording trio origins`
+- [x] `git mv` each of the three backlog files to `docs/history/backlog/completed/` and set `Status: done` in the same edit (no prose rewording; note the vrs origin's status line is the bold `- **Status:** open` form: replace that whole line with the plain `Status: done`)
+- [x] Run the full Validation Commands block from the repo root → expect exit 0 with `VALIDATION OK`
+- [x] `bash -n` over the Validation Commands block → expect exit 0
+- [x] Mechanical pin audit: for every pinned fragment in the Validation Commands block, `grep -cF` on its target file returns at least 1 for positive pins and the stale-wording sweep returns 0; fix both sides of any mismatch in the same edit
+- [x] Commit: `backlog: complete done-skill/validator wording trio origins`
+
+## Post-execution review folds (2026-09-07)
+
+Recorded during the Phase 3 review loop (r1 panel + r2 targeted pass), superseding the byte-literal expectations above where noted:
+
+- r1 F1 (echo×4): the Task 3 commit checkbox above was ticked after the fact; commit `22ec577` is its evidence.
+- r1 F2: the Task 1 annotation in `docs/plans/completed/2026-09-04-done-deliverables-log-dedupe-and-anchors.md` was extended in place (2026-09-07 clause naming the now-stale `write an empty per-run marker file` probe in that plan's frozen Validation Commands block). The prescribed annotation text ending `...not the final snippet.*` is therefore no longer verbatim on disk, and the `[x] No other byte of the archived plan changes` tick holds only as of Task 3's own commit (`22ec577`), not at HEAD.
+- r1 F3: a field-order sentence was appended after the Step 0 content-bearing sentence in `agents/skills/done/SKILL.md` (first field epoch, last field PID, everything between them is the repo root), now pinned by the `everything between them is the repo root` Validation Command above.
+- r1 F4 (deferred): marker-content persistence onto the docs branch → backlog `docs/history/backlog/2026-09-07-run-start-marker-content-docs-branch-leak.md`.
+- r3 F1: the Step 2.62 content-confirmation sentence (prescribed verbatim by Task 2) over-claimed identity strength: the echo prints only the marker path, so epoch and PID have no gate-time comparison witness. Reworded in `agents/skills/done/SKILL.md` to the checkable form (a recorded `$REPO_TOP` matching this repo is the confirmable field; epoch and PID are recorded for post-hoc audit); the pinned `a content mismatch applies the same no-prune rule` clause is unchanged.
+- r3 F2: the r1 F3 fold bullet above originally said the clause was "appended to the Step 0 content-bearing sentence"; corrected to "appended after".
+- r4 F1: the Step 0 content-bearing prose now says "the trailing-slash-stripped resolved `$REPO_TOP`" to match the snippet's `${REPO_TOP%/}` literal.

@@ -1,6 +1,6 @@
 # Backlog: done run-start marker r5 review residuals
 
-Status: open
+Status: done
 Origin: code review r5 of docs/plans/2026-09-04-done-deliverables-log-dedupe-and-anchors.md (docs/reviews/2026-09-06-2026-09-04-done-deliverables-log-dedupe-and-anchors-code-review-r5.md)
 Captured: 2026-09-06 (execute-plan Phase 3 exit; round-5 cap reached, findings valid but unfixed)
 

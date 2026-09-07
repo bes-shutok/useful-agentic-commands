@@ -1,6 +1,6 @@
 # Backlog: done run-start marker behaviors lack validation probes in the plan
 
-Status: open
+Status: done
 Origin: docs/reviews/2026-09-06-2026-09-04-done-deliverables-log-dedupe-and-anchors-code-review-r1.md (findings R1-2 Medium + R1-5 Low, testing lens, non-blocking; execute-plan Phase 3 round 1)
 
 ## Finding
