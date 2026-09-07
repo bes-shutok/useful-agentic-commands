@@ -1,8 +1,11 @@
 # Feature Note: Review Token-Usage Telemetry
 
-Status: **Not started**. Prerequisite: a producer-side change (below). This is a
-forward-looking feature note, not an active plan. Filed under `docs/history/feature-notes/`
-as a proposal awaiting a producer.
+Status: **Producer landed 2026-09-07** (plan:
+`docs/plans/completed/2026-09-06-token-usage-telemetry.md`; capture module
+`scripts/review_usage_capture.py`, optional `usage` sidecar field, summarizer
+observed-token totals + post-cutover coverage). The sections below are the
+original proposal text, kept as history. Observable proof pending: a real
+post-cutover review round whose sidecar `usage` matches the store (Ship when).
 
 Referenced from: `docs/plans/2026-07-27-phase-2-review-telemetry.md` (token aggregation
 deferred out of Phase 2; see its Gist and Out-of-scope section).

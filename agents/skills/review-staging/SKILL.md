@@ -271,6 +271,8 @@ Orchestrators **must** write a machine-readable sidecar next to every staging do
 
 Same basename as the `.md` file. Write the sidecar in the same pass as the `.md` file (do not defer). Skip only when the orchestrator cannot emit valid JSON without guessing; in that case record `Stats sidecar: skipped (<reason>)` under `## Metadata` and treat the review as incomplete for panel-tuning aggregation.
 
+**Usage capture (production write path):** when writing a `.stats.json` sidecar, run `python3 ~/.ai-playbook/scripts/review_usage_capture.py --json` and merge its output as the top-level `usage` field when it prints one (`review_usage_capture.py` is reached via `~/.ai-playbook/scripts/` (symlinked entries into this repo's `scripts/`), so the script is available once the repo commit lands). When it prints nothing (foreign runtime, unreadable store, not a git work tree), write the sidecar without `usage` and proceed unchanged; never estimate or hand-author a `usage` record.
+
 Minimum schema:
 
 ```json
@@ -352,7 +354,7 @@ Required top-level fields (all must be present; enum-typed fields use `null` whe
 | `overflow` | array; never contains a Critical or blocking finding |
 | `soften_watchlist` | array; `[]` when none |
 
-Optional top-level fields: `depth` (string), `domains` (list), `verdict` (string `yes` or `no`; the plan-review producer writes it alongside the `## Summary`), `extensions` (object). Any other top-level field is rejected; future extensions belong inside the object-valued `extensions` (a non-object `extensions` value is rejected).
+Optional top-level fields: `depth` (string), `domains` (list), `verdict` (string `yes` or `no`; the plan-review producer writes it alongside the `## Summary`), `extensions` (object), `usage` (shape owned by the capture module; the validator accepts the key only). Any other top-level field is rejected; future extensions belong inside the object-valued `extensions` (a non-object `extensions` value is rejected).
 
 Canonical Pattern IDs (version-1): findings, overflow items, and discarded rows that carry a pattern must use `<lens>#<kebab-slug>` with an owner from the declared set in **Pattern id format**. A version-1 finding must also carry the same canonical `pattern` in its Markdown `- **Pattern**:` bullet; a missing or differing Markdown Pattern is a conservation error.
 

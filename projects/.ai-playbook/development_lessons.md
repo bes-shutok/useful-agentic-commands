@@ -5641,3 +5641,15 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** a review found that a location gate's three `startswith("..")` tests falsely rejected directories legitimately named like `..hidden`, rejecting valid configuration because the check matched characters instead of segments; the corrected segment test needed a dedicated over-match fixture to keep the true-escape arm honest.
 
 **See also:** #299 (resolved-path containment guards and degenerate roots), #283 (degenerate textual config values), #133 (pin every sibling arm with its own discriminating test).
+
+## 301. Run a new data adapter on real captured input and read its output records before landing
+
+**Principle:** Family H (verify the real thing, not the abstraction: a synthetic fixture that mirrors the assumed format proves nothing about real captures).
+
+**Trigger:** any new parser or adapter for an external tool's on-disk log/session format, tested only against hand-built fixtures, where the real format was never inspected.
+
+**Rule:** (1) Before landing, execute the adapter against at least one real captured input file from the target tool and assert nonzero extraction on it. (2) Read the emitted records end to end, not just exit status: check both that the expected payload fields were found and that record contents (for example embedded provenance paths) contain no machine-specific absolute paths; abbreviate the home directory to `~` in outputs. (3) Keep at most one fixture pinned to the legacy/assumed shape as a compatibility witness; make the real captured shape the default fixture.
+
+**Why:** a review of a token-usage telemetry script found the rollout-event adapter parsed an assumed envelope while real files nest the token counters two levels deeper, so the adapter was dead on production data while its selftests stayed green; the same pass found emitted records embedding the absolute home directory path in provenance fields.
+
+**See also:** #298 (execute the fragment against the real input it will run on), #299 (resolved-path containment guards and degenerate roots).

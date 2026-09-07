@@ -103,7 +103,11 @@ V1_REQUIRED_TOP_LEVEL_FIELDS = (
 )
 # Optional version-1 top-level fields with documented types: ``depth`` string,
 # ``domains`` list, ``verdict`` string ``yes``/``no``, ``extensions`` object.
-V1_OPTIONAL_TOP_LEVEL_FIELDS = ("depth", "domains", "verdict", "extensions")
+# ``usage`` is allowlisted only: the validator never gates its shape. Shape
+# ownership lives in the capture module's selftests
+# (``scripts/review_usage_capture.py --selftest``), the single producer of
+# the field, so a malformed ``usage`` value validates here by design.
+V1_OPTIONAL_TOP_LEVEL_FIELDS = ("depth", "domains", "verdict", "extensions", "usage")
 # r6 F8: version-1 ``date`` is a shape-checked string (calendar validity is
 # out of scope; the documented contract is the format). ``\Z`` (not ``$``)
 # so a trailing newline cannot slip through, ASCII-only ``[0-9]`` so
@@ -5536,6 +5540,72 @@ def _selftest_versioned_schema_and_patterns(root: Path, check) -> None:
     )
 
 
+def _selftest_usage_optional(root: Path, check) -> None:
+    """Family: the optional version-1 top-level ``usage`` field (token-usage
+    telemetry plan, Task 2). The validator accepts the key only (rationale
+    at ``V1_OPTIONAL_TOP_LEVEL_FIELDS``). RED-first family: the accept
+    checks fail until ``usage`` joins the optional-field tuple."""
+    base_md = _version1_markdown()
+
+    def stage(name: str, payload: dict) -> Path:
+        return _write_staging(
+            root, f"2026-09-06-branch-review-usage-{name}-r1.md", base_md, payload
+        )
+
+    usage_record = {
+        "adapter": "zcode-sqlite",
+        "provenance": {
+            "db": "~/.zcode/cli/db/db.sqlite",
+            "session_ids": ["sess_89a0cb7"],
+            "ambiguous": False,
+            "window_started_at_ms": 1788698397679,
+            "window_ended_at_ms": 1788719997679,
+            "captured_at_ms": 1788719997680,
+            "estimated": False,
+        },
+        "totals": {
+            "input_tokens": 682748,
+            "output_tokens": 4546,
+            "reasoning_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "computed_total_tokens": 687294,
+        },
+        "by_agent_kind": {
+            "main": {"input_tokens": 120000, "output_tokens": 900},
+            "subagent": {"input_tokens": 560000, "output_tokens": 3600},
+            "other": {"input_tokens": 2748, "output_tokens": 46},
+        },
+    }
+
+    # selftest_usage_optional_v1: a v1 payload carrying a well-formed usage
+    # record validates hard (usage accepted via V1_OPTIONAL_TOP_LEVEL_FIELDS).
+    with_usage = _version1_payload()
+    with_usage["usage"] = usage_record
+    check(
+        "usage optional: v1 sidecar with a well-formed usage record passes hard "
+        "(accepted via V1_OPTIONAL_TOP_LEVEL_FIELDS)",
+        validate_staging_file(stage("well-formed", with_usage), hard=True).ok,
+    )
+
+    # selftest_usage_absent_legacy: the v1 payload with no usage key passes
+    # unchanged (legacy sidecars remain parseable; usage is never required).
+    check(
+        "usage optional: v1 sidecar without a usage key passes unchanged "
+        "(legacy sidecars remain parseable)",
+        validate_staging_file(stage("absent", _version1_payload()), hard=True).ok,
+    )
+
+    # selftest_usage_malformed_tolerated: a bare-string usage still passes
+    # hard (rationale at V1_OPTIONAL_TOP_LEVEL_FIELDS).
+    malformed_usage = _version1_payload()
+    malformed_usage["usage"] = "not-a-usage-record"
+    check(
+        "usage optional: v1 sidecar with a bare-string usage passes hard",
+        validate_staging_file(stage("malformed", malformed_usage), hard=True).ok,
+    )
+
+
 def run_selftest() -> int:
     import tempfile
 
@@ -5557,6 +5627,7 @@ def run_selftest() -> int:
             ("source_cli", _selftest_source_cli),
             ("discarded_header_skip", _selftest_discarded_header_skip),
             ("versioned_schema_and_patterns", _selftest_versioned_schema_and_patterns),
+            ("usage_optional", _selftest_usage_optional),
         ):
             fn(root, check)
 

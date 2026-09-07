@@ -58,7 +58,7 @@ The feature note asks for provider token usage in review sidecars so the summari
 }
 ```
 
-and the summarizer report gains `observed_token_totals` and `usage_coverage` lines; reviews without usage keep reporting exactly today's numbers. A Codex-run review gets the same record with `adapter: "codex-rollout"` (rollout files matched by `cwd` within the window, the session's last `token_count` event taken as the cumulative total); any review where neither store yields data has no `usage` key and aggregates byte-identically to today.
+and the summarizer report gains `observed_token_totals` and `usage_coverage` lines; reviews without usage keep reporting exactly today's numbers. A Codex-run review gets the same record with `adapter: "codex-rollout"` (rollout files matched by `cwd` within the window, each rollout file's last cumulative `token_count` event, summed per session group); any review where neither store yields data has no `usage` key and aggregates byte-identically to today.
 
 **Edge cases that shaped the design:** parallel review sessions on the same repo (both fall inside the window -> `ambiguous: true` union, never a silent pick); `query_source` rows outside `main_turn`/`subagent` (`compact`, `session_title`, `target_completion_verification`) are bucketed under `other` in `by_agent_kind` and always stay inside `totals` (all values are sums of observed rows); per-worker-per-call attribution needs durable lineage, deferred by the note; legacy sidecars already carry no `usage` key and must keep parsing.
 
@@ -125,36 +125,36 @@ grep -q "review_usage_capture.p[y]" agents/skills/review-staging/SKILL.md
 Files:
 - `scripts/review_usage_capture.py` *(new)*
 
-- [ ] `review_usage_capture#selftest_single_session`; given a fixture sqlite db built at the store's real millisecond scale from the verified `session`/`model_usage` schema with one session for the repo directory and completed rows inside the window, expects a normalized dict with `adapter="zcode-sqlite"`, integer token totals equal to the row sums, `by_agent_kind` bucketing `main_turn` as `main`, `subagent` as `subagent`, and every other `query_source` (e.g. `compact`) as `other` while keeping all rows in `totals`, and provenance naming db path, session id, and millisecond window bounds with `estimated: false`
-- [ ] `review_usage_capture#selftest_no_db`; given a home directory with no `~/.zcode/cli/db/db.sqlite`, expects `None` and no exception
-- [ ] `review_usage_capture#selftest_missing_table`; given a fixture db lacking `model_usage`, expects `None`
-- [ ] `review_usage_capture#selftest_empty_window`; given a fixture db whose only rows complete before the window starts, expects `None`
-- [ ] `review_usage_capture#selftest_straddling_row_included`; given a row that started before the window start but completed inside it, expects the row counted (filter is on `completed_at` only)
-- [ ] `review_usage_capture#selftest_child_sessions_collapse`; given one root session plus two child sessions (`parent_id` at the root, same directory) with completed rows inside the window, expects a single attributed record with the root's (truncated) id in provenance, `ambiguous: false`, and child-session rows counted in `totals` and bucketed by their `query_source`
-- [ ] `review_usage_capture#selftest_two_sessions_ambiguous`; given two ROOT sessions (no parent linkage) for the same directory with rows inside the window, expects a union dict with both (truncated) root ids and `provenance.ambiguous: true`
-- [ ] `review_usage_capture#selftest_foreign_directory`; given rows only for a different repo directory, expects `None`
-- [ ] `review_usage_capture#selftest_never_raises`; given a corrupt (non-sqlite) file at the db path, expects `None` and no exception propagating to the caller
-- [ ] `review_usage_capture#selftest_locked_db`; given a fixture db held by an open exclusive writer connection (lock timeout, bounded by `busy_timeout`), expects `None` after the bounded wait and no exception
-- [ ] Run `python3 scripts/review_usage_capture.py --selftest` → expect RED (module does not exist)
-- [ ] Write minimal implementation: read-only sqlite query (`mode=ro`), `USAGE_WINDOW_MS = 6 * 60 * 60 * 1000` window over `completed_at` with `status='completed'` (milliseconds) plus the git-toplevel directory filter described in the Gist, root-session collapse via the `session.parent_id` walk, normalization with the `main`/`subagent`/`other` buckets, root session ids truncated to their first 12 characters in provenance (opaque ids; truncation keeps committed sidecars minimal while preserving forensics), fail-open `try/except` returning `None` on every error path, and a `--json` CLI entry that prints the usage record for the agent to merge into a sidecar
-- [ ] Run `python3 scripts/review_usage_capture.py --selftest` → expect GREEN
-- [ ] Commit: `feat: review usage capture module reading runtime store`
+- [x] `review_usage_capture#selftest_single_session`; given a fixture sqlite db built at the store's real millisecond scale from the verified `session`/`model_usage` schema with one session for the repo directory and completed rows inside the window, expects a normalized dict with `adapter="zcode-sqlite"`, integer token totals equal to the row sums, `by_agent_kind` bucketing `main_turn` as `main`, `subagent` as `subagent`, and every other `query_source` (e.g. `compact`) as `other` while keeping all rows in `totals`, and provenance naming db path, session id, and millisecond window bounds with `estimated: false`
+- [x] `review_usage_capture#selftest_no_db`; given a home directory with no `~/.zcode/cli/db/db.sqlite`, expects `None` and no exception
+- [x] `review_usage_capture#selftest_missing_table`; given a fixture db lacking `model_usage`, expects `None`
+- [x] `review_usage_capture#selftest_empty_window`; given a fixture db whose only rows complete before the window starts, expects `None`
+- [x] `review_usage_capture#selftest_straddling_row_included`; given a row that started before the window start but completed inside it, expects the row counted (filter is on `completed_at` only)
+- [x] `review_usage_capture#selftest_child_sessions_collapse`; given one root session plus two child sessions (`parent_id` at the root, same directory) with completed rows inside the window, expects a single attributed record with the root's (truncated) id in provenance, `ambiguous: false`, and child-session rows counted in `totals` and bucketed by their `query_source`
+- [x] `review_usage_capture#selftest_two_sessions_ambiguous`; given two ROOT sessions (no parent linkage) for the same directory with rows inside the window, expects a union dict with both (truncated) root ids and `provenance.ambiguous: true`
+- [x] `review_usage_capture#selftest_foreign_directory`; given rows only for a different repo directory, expects `None`
+- [x] `review_usage_capture#selftest_never_raises`; given a corrupt (non-sqlite) file at the db path, expects `None` and no exception propagating to the caller
+- [x] `review_usage_capture#selftest_locked_db`; given a fixture db held by an open exclusive writer connection (lock timeout, bounded by `busy_timeout`), expects `None` after the bounded wait and no exception
+- [x] Run `python3 scripts/review_usage_capture.py --selftest` → expect RED (module does not exist)
+- [x] Write minimal implementation: read-only sqlite query (`mode=ro`), `USAGE_WINDOW_MS = 6 * 60 * 60 * 1000` window over `completed_at` with `status='completed'` (milliseconds) plus the git-toplevel directory filter described in the Gist, root-session collapse via the `session.parent_id` walk, normalization with the `main`/`subagent`/`other` buckets, root session ids truncated to their first 12 characters in provenance (opaque ids; truncation keeps committed sidecars minimal while preserving forensics), fail-open `try/except` returning `None` on every error path, and a `--json` CLI entry that prints the usage record for the agent to merge into a sidecar
+- [x] Run `python3 scripts/review_usage_capture.py --selftest` → expect GREEN
+- [x] Commit: `feat: review usage capture module reading runtime store`
 
 ### Task 1b: RED - Codex rollout adapter
 
 Files:
 - `scripts/review_usage_capture.py`
 
-- [ ] `review_usage_capture#selftest_codex_single_rollout`; given a fixture `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` whose `session_meta` line records `cwd` equal to the repo anchor and whose `token_count` events carry cumulative `total_token_usage` objects, expects a normalized dict with `adapter="codex-rollout"`, `provenance.db` naming the rollout directory, `session_ids` holding the truncated rollout session id, and totals mapped per the Assumptions (cached -> cache_read, cache_write -> cache_creation, reasoning_output -> reasoning, total_tokens -> computed_total); the LAST `token_count` event wins
-- [ ] `review_usage_capture#selftest_codex_root_collapse`; given a parent rollout plus worker rollouts whose `session_meta.session_id` names the parent thread (linked via `parent_thread_id`, verified live 2026-09-06), expects ONE attributed record with the parent's (truncated) id and `ambiguous: false` (root collapse mirrors the zcode join; worker rollouts never count as distinct candidates)
-- [ ] `review_usage_capture#selftest_codex_no_match`; given rollout files whose `cwd` is a different repo, expects `None`; and separately, given a matching-`cwd` rollout last modified before the window start, expects `None` (two distinct no-match witnesses, not one OR-ed test)
-- [ ] `review_usage_capture#selftest_codex_two_rollouts_ambiguous`; given two INDEPENDENT parent rollouts (no parent-thread linkage) for the same repo inside the window, expects a union dict with both (truncated) root session ids and `provenance.ambiguous: true`
-- [ ] `review_usage_capture#selftest_codex_malformed_jsonl`; given a rollout file containing a truncated/garbage line, expects the parser to skip bad lines and still produce a record from the well-formed prefix (or `None` when no `token_count` event survives), never raising
-- [ ] `review_usage_capture#selftest_adapter_fallback_order`; given a home dir where the zcode db is absent but a matching codex rollout exists, expects the record with `adapter="codex-rollout"`; given both stores yield data, expects the zcode-sqlite record to win (first adapter in `zcode-sqlite`, `codex-rollout` order)
-- [ ] Run `python3 scripts/review_usage_capture.py --selftest` → expect RED (codex tests fail: adapter not implemented)
-- [ ] Write minimal implementation: window pre-filter on rollout file mtime, `session_meta` `cwd` matched against the same git-toplevel anchor as the zcode branch (realpath equal to the anchor or a path inside it, never a bare `startswith` prefix), root collapse by grouping rollouts on `session_meta.session_id` (the parent thread id; worker files' own uuids are not candidates), last-`token_count`-wins parsing with per-line `try/except json` skip, the Assumptions field mapping, and the `zcode-sqlite` -> `codex-rollout` fallback order in the `--json` CLI entry (adapter recorded in the emitted record's `adapter` field). Accepted limitation (symmetric with the zcode session-grain note): mtime pre-filter plus last-cumulative-wins attributes session-lifetime tokens for long-lived sessions, not tokens accrued inside the window alone
-- [ ] Run `python3 scripts/review_usage_capture.py --selftest` → expect GREEN
-- [ ] Commit: `feat: codex rollout usage adapter with zcode-first fallback`
+- [x] `review_usage_capture#selftest_codex_single_rollout`; given a fixture `~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl` whose `session_meta` line records `cwd` equal to the repo anchor and whose `token_count` events carry cumulative `total_token_usage` objects, expects a normalized dict with `adapter="codex-rollout"`, `provenance.db` naming the rollout directory, `session_ids` holding the truncated rollout session id, and totals mapped per the Assumptions (cached -> cache_read, cache_write -> cache_creation, reasoning_output -> reasoning, total_tokens -> computed_total); the LAST `token_count` event wins
+- [x] `review_usage_capture#selftest_codex_root_collapse`; given a parent rollout plus worker rollouts whose `session_meta.session_id` names the parent thread (linked via `parent_thread_id`, verified live 2026-09-06), expects ONE attributed record with the parent's (truncated) id and `ambiguous: false` (root collapse mirrors the zcode join; worker rollouts never count as distinct candidates)
+- [x] `review_usage_capture#selftest_codex_no_match`; given rollout files whose `cwd` is a different repo, expects `None`; and separately, given a matching-`cwd` rollout last modified before the window start, expects `None` (two distinct no-match witnesses, not one OR-ed test)
+- [x] `review_usage_capture#selftest_codex_two_rollouts_ambiguous`; given two INDEPENDENT parent rollouts (no parent-thread linkage) for the same repo inside the window, expects a union dict with both (truncated) root session ids and `provenance.ambiguous: true`
+- [x] `review_usage_capture#selftest_codex_malformed_jsonl`; given a rollout file containing a truncated/garbage line, expects the parser to skip bad lines and still produce a record from the well-formed prefix (or `None` when no `token_count` event survives), never raising
+- [x] `review_usage_capture#selftest_adapter_fallback_order`; given a home dir where the zcode db is absent but a matching codex rollout exists, expects the record with `adapter="codex-rollout"`; given both stores yield data, expects the zcode-sqlite record to win (first adapter in `zcode-sqlite`, `codex-rollout` order)
+- [x] Run `python3 scripts/review_usage_capture.py --selftest` → expect RED (codex tests fail: adapter not implemented)
+- [x] Write minimal implementation: window pre-filter on rollout file mtime, `session_meta` `cwd` matched against the same git-toplevel anchor as the zcode branch (realpath equal to the anchor or a path inside it, never a bare `startswith` prefix), root collapse by grouping rollouts on `session_meta.session_id` (the parent thread id; worker files' own uuids are not candidates), last-`token_count`-wins parsing with per-line `try/except json` skip, the Assumptions field mapping, and the `zcode-sqlite` -> `codex-rollout` fallback order in the `--json` CLI entry (adapter recorded in the emitted record's `adapter` field). Accepted limitation (symmetric with the zcode session-grain note): mtime pre-filter plus last-cumulative-wins attributes session-lifetime tokens for long-lived sessions, not tokens accrued inside the window alone
+- [x] Run `python3 scripts/review_usage_capture.py --selftest` → expect GREEN
+- [x] Commit: `feat: codex rollout usage adapter with zcode-first fallback`
 
 ### Task 2: RED - sidecar schema accepts optional `usage`; production wiring lands in the review-staging skill
 
@@ -162,35 +162,36 @@ Files:
 - `scripts/validate_review_staging.py`
 - `agents/skills/review-staging/SKILL.md`
 
-- [ ] `validate_review_staging#selftest_usage_optional_v1`; given a v1 sidecar payload carrying a well-formed `usage` record, expects validation to pass with `usage` accepted via `V1_OPTIONAL_TOP_LEVEL_FIELDS`
-- [ ] `validate_review_staging#selftest_usage_absent_legacy`; given the current v1 payload with no `usage` key, expects validation to pass unchanged (legacy sidecars remain parseable)
-- [ ] `validate_review_staging#selftest_usage_malformed_tolerated`; given a v1 payload whose `usage` is a bare string, expects validation to pass: the validator allowlists the key only, and shape ownership lives in the capture module's selftests (state this division in a comment beside the constant)
-- [ ] Run `python3 scripts/validate_review_staging.py --selftest` → expect RED (new checks fail: `usage` not in optional fields)
-- [ ] Add `"usage"` to `V1_OPTIONAL_TOP_LEVEL_FIELDS` (~line 106) with the shape-ownership comment
-- [ ] Add the capture step to the `review-staging` sidecar-production contract (Hard gate section area, `agents/skills/review-staging/SKILL.md`): when writing a `.stats.json` sidecar, run `python3 scripts/review_usage_capture.py --json` and merge its output as the top-level `usage` field when it prints one; when it prints nothing (foreign runtime, unreadable store), write the sidecar without `usage` and proceed unchanged. This is the production write path; the validator only accepts the field
-- [ ] Run `python3 scripts/validate_review_staging.py --selftest` → expect GREEN (including all pre-existing checks)
-- [ ] Commit: `feat: accept optional usage field and route capture through review-staging`
+- [x] `validate_review_staging#selftest_usage_optional_v1`; given a v1 sidecar payload carrying a well-formed `usage` record, expects validation to pass with `usage` accepted via `V1_OPTIONAL_TOP_LEVEL_FIELDS`
+- [x] `validate_review_staging#selftest_usage_absent_legacy`; given the current v1 payload with no `usage` key, expects validation to pass unchanged (legacy sidecars remain parseable)
+- [x] `validate_review_staging#selftest_usage_malformed_tolerated`; given a v1 payload whose `usage` is a bare string, expects validation to pass: the validator allowlists the key only, and shape ownership lives in the capture module's selftests (state this division in a comment beside the constant)
+- [x] Run `python3 scripts/validate_review_staging.py --selftest` → expect RED (new checks fail: `usage` not in optional fields)
+- [x] Add `"usage"` to `V1_OPTIONAL_TOP_LEVEL_FIELDS` (~line 106) with the shape-ownership comment
+- [x] Add the capture step to the `review-staging` sidecar-production contract (Hard gate section area, `agents/skills/review-staging/SKILL.md`): when writing a `.stats.json` sidecar, run `python3 scripts/review_usage_capture.py --json` and merge its output as the top-level `usage` field when it prints one; when it prints nothing (foreign runtime, unreadable store), write the sidecar without `usage` and proceed unchanged. This is the production write path; the validator only accepts the field
+  - Review r2 note: the landed path form in the skill is the runtime-absolute `~/.ai-playbook/scripts/review_usage_capture.py` (each file in the runtime scripts dir symlinks into this repo's `scripts/`), not the repo-relative form recorded above.
+- [x] Run `python3 scripts/validate_review_staging.py --selftest` → expect GREEN (including all pre-existing checks)
+- [x] Commit: `feat: accept optional usage field and route capture through review-staging`
 
 ### Task 3: RED - summarizer aggregates observed tokens and coverage
 
 Files:
 - `scripts/summarize_review_stats.py`
 
-- [ ] `summarize_review_stats#current_adapter_usage_collected`; given a current-schema payload whose `usage` record carries the seam test's previous fixture values, expects normalized totals to include the observed input/output/total token counts instead of ignoring them
-- [ ] `summarize_review_stats#current_adapter_no_usage_unchanged`; given the same payload without `usage`, expects normalized totals byte-identical to today's output (launch/dedup/triage numbers unchanged, no token fields)
-- [ ] `summarize_review_stats#current_adapter_malformed_usage_treated_absent`; given a payload whose `usage` is a bare string or missing `totals`, expects the adapter to treat it as absent (no crash, no token fields) mirroring the validator's tolerance
-- [ ] `summarize_review_stats#coverage_post_cutover_denominator`; given a corpus of one sidecar with `usage`, one legacy pre-cutover sidecar without, and one post-cutover sidecar (date >= `USAGE_CUTOVER_DATE`) without `usage`, expects coverage computed as 1 of 2 post-cutover sidecars: the legacy sidecar is excluded from the denominator by the `date >= USAGE_CUTOVER_DATE` classification, and the post-cutover sidecar without `usage` is in the denominator but not the numerator (the denominator is NOT "sidecars with usage")
-- [ ] `summarize_review_stats#decision_rule_supplementary`; given observed-token coverage below 70 percent, expects the report to label token cost supplementary; given coverage at or above 70 percent over post-cutover sidecars, expects the supplementary label dropped; and no branch of the rule reads or requires pre-cutover token data
-- [ ] Run `python3 scripts/summarize_review_stats.py --selftest` → expect RED
-- [ ] Add `USAGE_CUTOVER_DATE = "2026-09-06"` (post-cutover = `payload["date"] >= USAGE_CUTOVER_DATE`; missing `date` counts as post-cutover); rewrite the usage-ignoring adapter tests (~line 4090) to the collect-and-report contract and update the seam comment block (~line 928) to say token usage IS read when present, still never estimated; add the observed-token totals and coverage lines to the report
-- [ ] Run `python3 scripts/summarize_review_stats.py --selftest` → expect GREEN (including legacy-adapter determinism tests)
-- [ ] Commit: `feat: aggregate observed token usage and coverage in review stats`
+- [x] `summarize_review_stats#current_adapter_usage_collected`; given a current-schema payload whose `usage` record carries the seam test's previous fixture values, expects the shared extraction helper to return the observed input/output/total token counts while `aggregate_current` attaches none (the report builder is the single extraction path)
+- [x] `summarize_review_stats#current_adapter_no_usage_unchanged`; given the same payload without `usage`, expects normalized totals byte-identical to today's output (launch/dedup/triage numbers unchanged, no token fields)
+- [x] `summarize_review_stats#current_adapter_malformed_usage_treated_absent`; given a payload whose `usage` is a bare string or missing `totals`, expects the adapter to treat it as absent (no crash, no token fields) mirroring the validator's tolerance
+- [x] `summarize_review_stats#coverage_post_cutover_denominator`; given a corpus of one sidecar with `usage`, one legacy pre-cutover sidecar without, and one post-cutover sidecar (date >= `USAGE_CUTOVER_DATE`) without `usage`, expects coverage computed as 1 of 2 post-cutover sidecars: the legacy sidecar is excluded from the denominator by the `date >= USAGE_CUTOVER_DATE` classification, and the post-cutover sidecar without `usage` is in the denominator but not the numerator (the denominator is NOT "sidecars with usage")
+- [x] `summarize_review_stats#decision_rule_supplementary`; given observed-token coverage below 70 percent, expects the report to label token cost supplementary; given coverage at or above 70 percent over post-cutover sidecars, expects the supplementary label dropped; and no branch of the rule reads or requires pre-cutover token data
+- [x] Run `python3 scripts/summarize_review_stats.py --selftest` → expect RED
+- [x] Add `USAGE_CUTOVER_DATE = "2026-09-06"` (post-cutover = `payload["date"] >= USAGE_CUTOVER_DATE`; missing `date` counts as post-cutover); rewrite the usage-ignoring adapter tests (~line 4090) to the collect-and-report contract and update the seam comment block (~line 928) to say token usage IS read when present, still never estimated; add the observed-token totals and coverage lines to the report
+- [x] Run `python3 scripts/summarize_review_stats.py --selftest` → expect GREEN (including legacy-adapter determinism tests)
+- [x] Commit: `feat: aggregate observed token usage and coverage in review stats`
 
 ### Task 4: Full validation pass
 
 Files:
 - none (validation only)
 
-- [ ] Run every Validation Command in order → expect each GREEN, including the three pinned greps that were RED before Tasks 2-3 and the negated never-estimate sweep
-- [ ] Confirm zero sidecars were modified anywhere in the working tree (`git status --short` shows no `.stats.json` paths); reason: historical sidecars are immutable inputs
-- [ ] Commit (if any residue from Tasks 1-3): `chore: token telemetry validation residue`
+- [x] Run every Validation Command in order → expect each GREEN, including the three pinned greps that were RED before Tasks 2-3 and the negated never-estimate sweep
+- [x] Confirm zero sidecars were modified anywhere in the working tree (`git status --short` shows no `.stats.json` paths); reason: historical sidecars are immutable inputs
+- [x] Commit (if any residue from Tasks 1-3): `chore: token telemetry validation residue`

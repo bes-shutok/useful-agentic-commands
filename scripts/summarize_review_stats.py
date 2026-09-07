@@ -924,10 +924,20 @@ def run_conservation(
 # Cost and finding-effectiveness aggregation (Task 2).
 # --------------------------------------------------------------------------- #
 #
-# Token telemetry is OUT OF SCOPE for this phase (no producer emits it; see
-# docs/history/feature-notes/2026-07-29-token-usage-telemetry.md). No token
-# field is read, reported, or estimated here. If a sidecar carries a token/usage
-# field it is ignored.
+# Token telemetry: token usage IS read when present, still never estimated.
+# A sidecar's optional top-level ``usage`` record (adapter + provenance +
+# totals + by_agent_kind, produced by scripts/review_usage_capture.py) is
+# aggregated into observed-token totals and usage coverage over post-cutover
+# sidecars (USAGE_CUTOVER_DATE below). Values are sums of observed provider
+# counts only: nothing is invented, imputed, or estimated. A malformed usage
+# record (bare string, missing ``totals``) is treated as absent, mirroring the
+# validator's tolerance.
+#
+# KNOWN LIMITATION: the observed-token totals SUM the usage records of all
+# post-cutover sidecars, and consecutive rounds' capture windows OVERLAP
+# (6-hour look-back over the same sessions), so the same session's lifetime
+# counters are counted once per capturing sidecar — the line is a sum of
+# sidecar usage records over overlapping windows, NOT unique spend.
 
 # Final-triage values (the set that resolves a finding for effectiveness
 # accounting). ``pending`` is NOT a final-triage value: it is excluded from
@@ -1054,14 +1064,69 @@ def _len_container(value) -> int:
     return len(value) if isinstance(value, (list, dict)) else 0
 
 
+# Usage-coverage cutover: sidecars whose ``date`` is on/after this day are
+# post-cutover; a sidecar missing ``date`` counts as post-cutover
+# (conservative: a date-less sidecar without usage can only suppress coverage
+# downward, never inflate it). Pre-cutover sidecars are excluded from the
+# coverage denominator entirely and their token data is never read.
+USAGE_CUTOVER_DATE = "2026-09-06"
+
+# Observed-token keys read from a usage record's ``totals`` block (sums of
+# observed provider counts; never estimated).
+_USAGE_TOTAL_KEYS = (
+    "input_tokens",
+    "output_tokens",
+    "reasoning_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+    "computed_total_tokens",
+)
+
+# Token cost stays labeled supplementary until observed-token coverage over
+# post-cutover sidecars reaches this fraction; at/above it the label drops.
+USAGE_COVERAGE_DECISION_THRESHOLD = 0.70
+
+
+def _usage_totals_from_payload(payload: dict) -> dict | None:
+    """Return observed token totals from a usage record, or None when absent.
+
+    Tolerance mirrors the validator's: a malformed record (bare string,
+    missing or mistyped ``totals``) is treated as absent rather than an error.
+    """
+    usage = payload.get("usage")
+    if not isinstance(usage, dict):
+        return None
+    totals = usage.get("totals")
+    if not isinstance(totals, dict):
+        return None
+    return {key: _coerce_int(totals.get(key)) for key in _USAGE_TOTAL_KEYS}
+
+
+def _is_post_cutover(payload: dict) -> bool:
+    """Classify a sidecar as post-cutover for usage coverage.
+
+    ``payload["date"] >= USAGE_CUTOVER_DATE`` (ISO dates compare
+    lexicographically); a missing or non-string ``date`` counts as
+    post-cutover (conservative; see USAGE_CUTOVER_DATE above).
+    """
+    date = payload.get("date")
+    if not isinstance(date, str):
+        return True
+    return date >= USAGE_CUTOVER_DATE
+
+
 def aggregate_current(payload: dict) -> dict:
     """Normalize a current (five-worker) sidecar payload to aggregation totals.
 
     Reads worker and lens launches, dedup, discard, calibration, overflow, and
-    triage totals. NO token field is read or reported. ``raw_findings`` is read
-    from ``counts.raw_findings`` (falling back to ``counts.raw_total`` for the
-    minority of current sidecars that carry it; both are read by trying each
-    key, matching the plan's artifact-size-bucket derivation rule).
+    triage totals. Observed token totals are NOT attached here: usage-record
+    extraction lives solely in ``build_effectiveness_report`` via
+    ``_usage_totals_from_payload`` (single path; the adapter seam has no
+    production usage consumer). ``raw_findings`` is
+    read from ``counts.raw_findings`` (falling back to ``counts.raw_total``
+    for the minority of current sidecars that carry it; both are read by
+    trying each key, matching the plan's artifact-size-bucket derivation
+    rule).
     """
     counts = payload.get("counts") if isinstance(payload.get("counts"), dict) else {}
 
@@ -1660,9 +1725,47 @@ def build_effectiveness_report(
         ),
         "skipped_malformed": skipped_malformed,
     }
+
+    # Observed token usage aggregation (never estimated): sum the observed
+    # ``totals`` blocks of POST-CUTOVER sidecars carrying a well-formed usage
+    # record, and compute coverage as the fraction of post-cutover sidecars
+    # carrying one. Pre-cutover sidecars are excluded from BOTH the numerator
+    # and the denominator (their token data is never read); a post-cutover
+    # sidecar without usage stays in the denominator (the denominator is NOT
+    # "sidecars with usage").
+    observed_token_totals = {key: 0 for key in _USAGE_TOTAL_KEYS}
+    sidecars_with_usage = 0
+    post_cutover_sidecars = 0
+    for _period, payload in clean:
+        if not _is_post_cutover(payload):
+            continue
+        post_cutover_sidecars += 1
+        observed = _usage_totals_from_payload(payload)
+        if observed is None:
+            continue
+        sidecars_with_usage += 1
+        for key in _USAGE_TOTAL_KEYS:
+            observed_token_totals[key] += observed[key]
+    coverage = (
+        sidecars_with_usage / post_cutover_sidecars
+        if post_cutover_sidecars
+        else None
+    )
+    usage_coverage = {
+        "sidecars_with_usage": sidecars_with_usage,
+        "post_cutover_sidecars": post_cutover_sidecars,
+        "coverage": coverage,
+        # Supplementary until observed-token coverage over post-cutover
+        # sidecars reaches the threshold (unknown coverage stays
+        # supplementary); no branch reads pre-cutover token data.
+        "token_cost_supplementary": coverage is None
+        or coverage < USAGE_COVERAGE_DECISION_THRESHOLD,
+    }
     return {
         "overall_verdict": overall_verdict(verdicts),
         "availability": availability_counts,
+        "observed_token_totals": observed_token_totals,
+        "usage_coverage": usage_coverage,
         "cohorts": per_cohort,
     }
 
@@ -1695,6 +1798,38 @@ def serialize_effectiveness_markdown(report: dict) -> bytes:
         availability += f", {avail['skipped_malformed']} skipped malformed"
     availability += "."
     lines.append(availability)
+    lines.append("")
+    # Observed token usage (never estimated): totals are sums of observed
+    # usage records on post-cutover sidecars; coverage is the fraction of
+    # post-cutover sidecars carrying one. KNOWN LIMITATION: capture windows
+    # overlap across a round's sidecars, so the same sessions' records are
+    # summed repeatedly — this is NOT unique spend. Token cost stays labeled
+    # supplementary until coverage reaches the decision threshold.
+    tok = report["observed_token_totals"]
+    lines.append(
+        "Observed token totals (sum of sidecar usage records over "
+        "overlapping capture windows; not unique spend): "
+        f"input={tok['input_tokens']}, output={tok['output_tokens']}, "
+        f"reasoning={tok['reasoning_tokens']}, "
+        f"cache_creation={tok['cache_creation_input_tokens']}, "
+        f"cache_read={tok['cache_read_input_tokens']}, "
+        f"computed_total={tok['computed_total_tokens']}"
+    )
+    cov = report["usage_coverage"]
+    if cov["post_cutover_sidecars"] == 0:
+        coverage_text = (
+            "Usage coverage: no post-cutover sidecars yet "
+            "(coverage unknown); token cost: supplementary"
+        )
+    else:
+        coverage_text = (
+            f"Usage coverage: {cov['sidecars_with_usage']}/"
+            f"{cov['post_cutover_sidecars']} post-cutover sidecars carry usage "
+            f"({cov['coverage']:.0%})"
+        )
+        if cov["token_cost_supplementary"]:
+            coverage_text += "; token cost: supplementary"
+    lines.append(coverage_text)
     lines.append("")
     lines.append("## Per-cohort verdicts")
     lines.append("")
@@ -4036,8 +4171,9 @@ def _stale_snapshot_inner(check) -> None:
 @_test("summarize_review_stats#current_adapter")
 def _t_current_adapter(check) -> None:
     """Parse a five-worker (current) sidecar; normalized totals cover launches,
-    lenses, dedup, discard, calibration, overflow, and triage. No token field is
-    read or reported (token telemetry is out of scope)."""
+    lenses, dedup, discard, calibration, overflow, and triage, plus the observed
+    token totals from the sidecar's ``usage`` record when present (never
+    estimated)."""
     # Build a representative current sidecar with non-trivial counts.
     payload = {
         "review_type": "branch review",
@@ -4087,8 +4223,34 @@ def _t_current_adapter(check) -> None:
             {"id": 5, "severity": "Low", "triage": "fixed"},
         ],
         "overflow": [{"severity": "Low", "blocking": False}],
-        # A token field MUST be ignored by the adapter.
-        "usage": {"prompt_tokens": 999, "completion_tokens": 1, "total_tokens": 1000},
+        # Observed token usage record (collect-and-report contract): the
+        # seam's previous fixture values (input 999 / output 1 / total 1000)
+        # in the usage-record shape produced by review_usage_capture.
+        "usage": {
+            "adapter": "zcode-sqlite",
+            "provenance": {
+                "db": "~/.zcode/cli/db/db.sqlite",
+                "session_ids": ["sess_89a0cb7"],
+                "ambiguous": False,
+                "window_started_at_ms": 1788698397679,
+                "window_ended_at_ms": 1788719997679,
+                "captured_at_ms": 1788719997680,
+                "estimated": False,
+            },
+            "totals": {
+                "input_tokens": 999,
+                "output_tokens": 1,
+                "reasoning_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "computed_total_tokens": 1000,
+            },
+            "by_agent_kind": {
+                "main": {"input_tokens": 999, "output_tokens": 1},
+                "subagent": {"input_tokens": 0, "output_tokens": 0},
+                "other": {"input_tokens": 0, "output_tokens": 0},
+            },
+        },
     }
     norm = aggregate_current(payload)
     # Launch totals: 4 launched (skipped worker is not a launch); launched
@@ -4115,10 +4277,33 @@ def _t_current_adapter(check) -> None:
     # Raw / staged raw counts.
     check("current_adapter: raw findings", norm["raw_findings"] == 8)
     check("current_adapter: staged findings", norm["staged_findings"] == 5)
-    # NO token field is read or reported.
+    # Observed token totals: the adapter no longer attaches them (single
+    # extraction path is build_effectiveness_report); the shared helper
+    # still reads the observed ``totals`` block (never estimated).
     check(
-        "current_adapter: no token field in normalized totals",
-        "tokens" not in norm and "usage" not in norm and "total_tokens" not in norm,
+        "current_adapter: usage_totals not attached (single report path)",
+        "usage_totals" not in norm,
+        str(sorted(norm)),
+    )
+    check(
+        "current_adapter: observed usage totals extracted by helper",
+        _usage_totals_from_payload(payload) == {
+            "input_tokens": 999,
+            "output_tokens": 1,
+            "reasoning_tokens": 0,
+            "cache_creation_input_tokens": 0,
+            "cache_read_input_tokens": 0,
+            "computed_total_tokens": 1000,
+        },
+        str(_usage_totals_from_payload(payload)),
+    )
+    # The normalized totals are unchanged by the usage record.
+    no_usage = aggregate_current(
+        {k: v for k, v in payload.items() if k != "usage"}
+    )
+    check(
+        "current_adapter: non-token totals unchanged by usage record",
+        norm == no_usage,
     )
 
     # r4 F1: a truthy mistyped container (e.g. severity_calibration=5) must
@@ -4140,6 +4325,337 @@ def _t_current_adapter(check) -> None:
         and bad_norm["calibration_count"] == 0
         and bad_norm["discard_count"] == 0
         and bad_norm["overflow_count"] == 0,
+    )
+
+
+# ---- current_adapter_usage_collected ----
+@_test("summarize_review_stats#current_adapter_usage_collected")
+def _t_current_adapter_usage_collected(check) -> None:
+    """Given a current-schema payload whose ``usage`` record carries the seam
+    test's previous fixture values, the shared extraction helper returns the
+    observed input/output/total token counts while the adapter attaches no
+    ``usage_totals`` (single extraction path: the effectiveness report)."""
+    payload = {
+        "review_type": "branch review",
+        "date": "2026-09-07",
+        "round": "r1",
+        "panel_mode": "full",
+        "counts": {"raw_findings": 2, "staged_findings": 1},
+        "panel": [
+            {"worker": "quality", "lenses": ["quality"], "status": "complete", "raw": 2}
+        ],
+        "findings": [{"id": 1, "severity": "Low", "triage": "fixed"}],
+        "usage": {
+            "adapter": "zcode-sqlite",
+            "provenance": {"session_ids": ["sess_89a0cb7"], "estimated": False},
+            "totals": {
+                "input_tokens": 999,
+                "output_tokens": 1,
+                "reasoning_tokens": 0,
+                "cache_creation_input_tokens": 0,
+                "cache_read_input_tokens": 0,
+                "computed_total_tokens": 1000,
+            },
+            "by_agent_kind": {
+                "main": {"input_tokens": 999, "output_tokens": 1},
+                "subagent": {"input_tokens": 0, "output_tokens": 0},
+                "other": {"input_tokens": 0, "output_tokens": 0},
+            },
+        },
+    }
+    norm = aggregate_current(payload)
+    observed = _usage_totals_from_payload(payload)
+    check(
+        "current_adapter_usage_collected: observed token totals extracted",
+        observed is not None,
+        str(observed),
+    )
+    if observed is not None:
+        check(
+            "current_adapter_usage_collected: input tokens",
+            observed["input_tokens"] == 999,
+        )
+        check(
+            "current_adapter_usage_collected: output tokens",
+            observed["output_tokens"] == 1,
+        )
+        check(
+            "current_adapter_usage_collected: total tokens",
+            observed["computed_total_tokens"] == 1000,
+        )
+    check(
+        "current_adapter_usage_collected: adapter attaches no usage_totals",
+        "usage_totals" not in norm,
+        str(sorted(norm)),
+    )
+    check(
+        "current_adapter_usage_collected: launch totals still aggregated",
+        norm["worker_launches"] == 1 and norm["lens_launches"] == 1,
+    )
+
+
+# ---- current_adapter_no_usage_unchanged ----
+@_test("summarize_review_stats#current_adapter_no_usage_unchanged")
+def _t_current_adapter_no_usage_unchanged(check) -> None:
+    """Given the same payload WITHOUT ``usage``, normalized totals are
+    byte-identical to the pre-telemetry output (launch/dedup/triage numbers
+    unchanged, no token fields added)."""
+    payload = {
+        "review_type": "branch review",
+        "date": "2026-09-07",
+        "round": "r1",
+        "panel_mode": "full",
+        "counts": {"raw_findings": 2, "staged_findings": 1, "deduplicated": 1},
+        "panel": [
+            {"worker": "quality", "lenses": ["quality"], "status": "complete", "raw": 2}
+        ],
+        "findings": [{"id": 1, "severity": "Low", "triage": "fixed"}],
+    }
+    norm = aggregate_current(payload)
+    expected = {
+        "schema": "current",
+        "worker_launches": 1,
+        "lens_launches": 1,
+        "raw_findings": 2,
+        "staged_findings": 1,
+        "dedup_count": 1,
+        "discard_count": 0,
+        "calibration_count": 0,
+        "overflow_count": 0,
+        "triage": {"fixed": 1, "deferred": 0, "dropped": 0, "pending": 0},
+        "severity": {"Critical": 0, "High": 0, "Medium": 0, "Low": 1},
+    }
+    check(
+        "current_adapter_no_usage_unchanged: normalized totals byte-identical",
+        json.dumps(norm, sort_keys=True) == json.dumps(expected, sort_keys=True),
+        json.dumps(norm, sort_keys=True),
+    )
+
+
+# ---- current_adapter_malformed_usage_treated_absent ----
+@_test("summarize_review_stats#current_adapter_malformed_usage_treated_absent")
+def _t_current_adapter_malformed_usage_treated_absent(check) -> None:
+    """A ``usage`` that is a bare string or lacks ``totals`` is treated as
+    absent (no crash, no token fields), mirroring the validator's tolerance."""
+    base = {
+        "review_type": "branch review",
+        "date": "2026-09-07",
+        "round": "r1",
+        "panel_mode": "full",
+        "counts": {"raw_findings": 1},
+        "panel": [{"worker": "quality", "status": "complete", "raw": 1}],
+        "findings": [],
+    }
+    for label, bad_usage in (
+        ("bare string", "usage-as-a-string"),
+        ("missing totals", {"adapter": "zcode-sqlite", "provenance": {}}),
+        ("mistyped totals", {"adapter": "zcode-sqlite", "totals": "not-a-dict"}),
+    ):
+        payload = dict(base)
+        payload["usage"] = bad_usage
+        try:
+            norm = aggregate_current(payload)
+            crashed = False
+        except Exception:
+            norm = None
+            crashed = True
+        check(
+            f"current_adapter_malformed_usage_treated_absent: {label} no crash",
+            not crashed,
+        )
+        check(
+            f"current_adapter_malformed_usage_treated_absent: {label} treated absent",
+            norm is not None
+            and "usage_totals" not in norm
+            and _usage_totals_from_payload(payload) is None,
+            str(sorted(norm or {})),
+        )
+
+
+def _usage_sidecar(date: str, totals: dict | None) -> dict:
+    """Minimal cohort-valid sidecar fixture with an optional usage record."""
+    payload = {
+        "review_type": "branch review",
+        "round": "r1",
+        "date": date,
+        "counts": {"raw_findings": 4},
+        "domains": ["docs"],
+        "panel_mode": "full",
+        "agents_launched": 4,
+        "findings": [{"id": 1, "severity": "Low", "triage": "fixed"}] * 4,
+    }
+    if totals is not None:
+        payload["usage"] = {
+            "adapter": "zcode-sqlite",
+            "provenance": {"session_ids": ["sess_89a0cb7"], "estimated": False},
+            "totals": totals,
+            "by_agent_kind": {},
+        }
+    return payload
+
+
+_USAGE_TOTALS_A = {
+    "input_tokens": 100,
+    "output_tokens": 10,
+    "reasoning_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "computed_total_tokens": 110,
+}
+_USAGE_TOTALS_B = {
+    "input_tokens": 50,
+    "output_tokens": 5,
+    "reasoning_tokens": 0,
+    "cache_creation_input_tokens": 0,
+    "cache_read_input_tokens": 0,
+    "computed_total_tokens": 55,
+}
+
+
+# ---- coverage_post_cutover_denominator ----
+@_test("summarize_review_stats#coverage_post_cutover_denominator")
+def _t_coverage_post_cutover_denominator(check) -> None:
+    """Coverage is computed over POST-CUTOVER sidecars only: a legacy
+    pre-cutover sidecar is excluded from the denominator by the
+    ``date >= USAGE_CUTOVER_DATE`` classification, and a post-cutover sidecar
+    without ``usage`` is in the denominator but not the numerator (the
+    denominator is NOT "sidecars with usage")."""
+    corpus = [
+        ("growth", _usage_sidecar("2026-09-07", _USAGE_TOTALS_A)),
+        ("baseline", _usage_sidecar("2026-01-01", None)),  # pre-cutover, no usage
+        ("growth", _usage_sidecar("2026-09-06", None)),  # post-cutover, no usage
+    ]
+    report = build_effectiveness_report(corpus)
+    cov = report.get("usage_coverage") or {}
+    check(
+        "coverage_post_cutover_denominator: numerator is sidecars with usage",
+        cov.get("sidecars_with_usage") == 1,
+        str(cov),
+    )
+    check(
+        "coverage_post_cutover_denominator: denominator is post-cutover sidecars",
+        cov.get("post_cutover_sidecars") == 2,
+        str(cov),
+    )
+    check(
+        "coverage_post_cutover_denominator: coverage is 1 of 2",
+        cov.get("coverage") == 0.5,
+        str(cov),
+    )
+    totals = report.get("observed_token_totals") or {}
+    check(
+        "coverage_post_cutover_denominator: observed totals sum observed records",
+        totals.get("input_tokens") == 100 and totals.get("computed_total_tokens") == 110,
+        str(totals),
+    )
+    # The classification itself: date >= cutover, missing date conservative.
+    check(
+        "coverage_post_cutover_denominator: cutoff constant",
+        USAGE_CUTOVER_DATE == "2026-09-06",
+    )
+    check(
+        "coverage_post_cutover_denominator: cutover day itself is post-cutover",
+        _is_post_cutover({"date": "2026-09-06"}),
+    )
+    check(
+        "coverage_post_cutover_denominator: day before cutover is pre-cutover",
+        not _is_post_cutover({"date": "2026-09-05"}),
+    )
+    check(
+        "coverage_post_cutover_denominator: missing date counts as post-cutover",
+        _is_post_cutover({}),
+    )
+
+
+# ---- decision_rule_supplementary ----
+@_test("summarize_review_stats#decision_rule_supplementary")
+def _t_decision_rule_supplementary(check) -> None:
+    """Token cost stays labeled supplementary while observed-token coverage
+    over post-cutover sidecars is below 70 percent; at or above 70 percent the
+    supplementary label is dropped. No branch of the rule reads or requires
+    pre-cutover token data (a pre-cutover sidecar carrying usage is ignored)."""
+    # Low coverage: 1 of 2 post-cutover sidecars carry usage (50% < 70%), and
+    # a pre-cutover sidecar WITH usage must not lift the numerator or totals.
+    low = build_effectiveness_report(
+        [
+            ("growth", _usage_sidecar("2026-09-07", _USAGE_TOTALS_A)),
+            ("growth", _usage_sidecar("2026-09-08", None)),
+            ("baseline", _usage_sidecar("2026-01-01", _USAGE_TOTALS_B)),
+        ]
+    )
+    cov_low = low.get("usage_coverage") or {}
+    check(
+        "decision_rule_supplementary: pre-cutover usage not counted in numerator",
+        cov_low.get("sidecars_with_usage") == 1,
+        str(cov_low),
+    )
+    check(
+        "decision_rule_supplementary: below threshold labeled supplementary",
+        cov_low.get("token_cost_supplementary") is True,
+        str(cov_low),
+    )
+    md_low = serialize_effectiveness_markdown(low).decode("utf-8")
+    check(
+        "decision_rule_supplementary: markdown labels token cost supplementary",
+        "token cost: supplementary" in md_low,
+        md_low,
+    )
+    totals_low = low.get("observed_token_totals") or {}
+    check(
+        "decision_rule_supplementary: pre-cutover tokens not read into totals",
+        totals_low.get("input_tokens") == 100,
+        str(totals_low),
+    )
+
+    # High coverage: 2 of 2 post-cutover sidecars carry usage (100% >= 70%).
+    high = build_effectiveness_report(
+        [
+            ("growth", _usage_sidecar("2026-09-07", _USAGE_TOTALS_A)),
+            ("growth", _usage_sidecar("2026-09-08", _USAGE_TOTALS_B)),
+        ]
+    )
+    cov_high = high.get("usage_coverage") or {}
+    check(
+        "decision_rule_supplementary: coverage at/above 70 percent",
+        cov_high.get("coverage") == 1.0,
+        str(cov_high),
+    )
+    check(
+        "decision_rule_supplementary: supplementary label dropped at threshold",
+        cov_high.get("token_cost_supplementary") is False,
+        str(cov_high),
+    )
+    md_high = serialize_effectiveness_markdown(high).decode("utf-8")
+    check(
+        "decision_rule_supplementary: markdown drops supplementary label",
+        "supplementary" not in md_high,
+        md_high,
+    )
+
+    # N7 boundary witness: coverage of EXACTLY 0.70 (7 of 10 post-cutover
+    # sidecars carry usage) drops the supplementary label (< vs <= pinned).
+    exact = build_effectiveness_report(
+        [("growth", _usage_sidecar(f"2026-09-{10 + i:02d}",
+                                   _USAGE_TOTALS_A if i < 7 else None))
+         for i in range(10)]
+    )
+    cov_exact = exact.get("usage_coverage") or {}
+    check(
+        "decision_rule_supplementary: exact 0.70 coverage",
+        cov_exact.get("coverage") == 0.70,
+        str(cov_exact),
+    )
+    check(
+        "decision_rule_supplementary: exact 0.70 not supplementary",
+        cov_exact.get("token_cost_supplementary") is False,
+        str(cov_exact),
+    )
+    totals_high = high.get("observed_token_totals") or {}
+    check(
+        "decision_rule_supplementary: totals sum both post-cutover records",
+        totals_high.get("input_tokens") == 150
+        and totals_high.get("computed_total_tokens") == 165,
+        str(totals_high),
     )
 
 
