@@ -29,6 +29,10 @@ Do not act on it until I confirm we have reached a shared understanding.
 
 **Mandatory ambiguity triggers (cleanup and restoration):** when a request says simplify, remove, delete, clean up, clean the branch, restore, or make it match the base, or otherwise asks to remove, revert, or reduce files toward an earlier state, or whose natural fulfillment includes deleting, reverting, or reorganizing files (tidy, organize, dedupe), and the working tree or branch (including committed changes relative to the base) contains more than the obvious feature work, or git status shows pre-existing paths you did not create or modify this session, ask one focused scope question before any edit or restore operation. Recommended wording: Should I change only the files, classes, and methods required by this feature, while preserving every other file and all pre-existing uncommitted content? Do not treat cleanup wording as permission to make the branch resemble its base; distinguish the task-owned diff from pre-existing work before touching anything.
 
+**Lifecycle-verb clarification trigger:** when a user says skip, leave, drop, defer, preserve, or otherwise uses a lifecycle verb whose effect on the current tree is unclear, restate the candidate interpretations as concrete tree actions (for example: remove it from the current change now, defer it to a later change, or leave it in place untouched) and ask which applies; record the answer before treating the candidate as settled.
+
+**No generic acknowledgement confirms a material choice:** a reply such as sure, ok, or confirmed confirms only the material decisions explicitly named in the question or confirmation block; a decision about one adjacent concern is never generalized to another unlisted concern.
+
 ## Integration Points
 
 ### With `premortem` skill

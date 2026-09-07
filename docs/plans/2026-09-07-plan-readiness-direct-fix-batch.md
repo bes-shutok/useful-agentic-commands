@@ -92,15 +92,15 @@ grep -qF 'a positive total with covered equal to total' scripts/plan_readiness.p
 Files:
 - `scripts/plan_readiness.py`
 
-- [ ] Edit the comment line above `VERDICT_TOKEN_RE` (line 68) from `# (eligible only once ``--sweep`` coverage reports covered equal to total).` to `# (eligible only once ``--sweep`` coverage reports a positive total with covered equal to total).`; comment-only, no other line changes
-- [ ] Run Validation Commands checks 1 and 3 only at this interim point (check 2 is unsatisfiable until Task 2 lands: its forbidden sweep still fires with 39 unprefixed hits); expect check 1 green (90 PASS / `ALL PASS`, rc 0) and check 3 green (stale wording zero matches, positive-total wording present)
-- [ ] Commit: `scripts: align VERDICT_TOKEN_RE eligibility comment with sweep gate`
+- [x] Edit the comment line above `VERDICT_TOKEN_RE` (line 68) from `# (eligible only once ``--sweep`` coverage reports covered equal to total).` to `# (eligible only once ``--sweep`` coverage reports a positive total with covered equal to total).`; comment-only, no other line changes
+- [x] Run Validation Commands checks 1 and 3 only at this interim point (check 2 is unsatisfiable until Task 2 lands: its forbidden sweep still fires with 39 unprefixed hits); expect check 1 green (90 PASS / `ALL PASS`, rc 0) and check 3 green (stale wording zero matches, positive-total wording present)
+- [x] Commit: `scripts: align VERDICT_TOKEN_RE eligibility comment with sweep gate`
 
 ### Task 2: Rename selftest helper write_clean_state to _write_clean_state
 
 Files:
 - `scripts/plan_readiness.py`
 
-- [ ] Rename `write_clean_state` to `_write_clean_state` at the definition (line 645) and all 38 call sites (lines 721 through 1815 per today's grep); signature, parameters, semantics, and return tuple unchanged
-- [ ] Run the full Validation Commands block; expect all checks green: selftest 90 PASS / `ALL PASS` rc 0, unprefixed sweep zero matches, `_write_clean_state` present, stale comment wording zero matches, positive-total wording present
-- [ ] Commit: `scripts: rename selftest helper write_clean_state to _write_clean_state`
+- [x] Rename `write_clean_state` to `_write_clean_state` at the definition (line 645) and all 38 call sites (lines 721 through 1815 per today's grep); signature, parameters, semantics, and return tuple unchanged
+- [x] Run the full Validation Commands block; expect all checks green: selftest 90 PASS / `ALL PASS` rc 0, unprefixed sweep zero matches, `_write_clean_state` present, stale comment wording zero matches, positive-total wording present
+- [x] Commit: `scripts: rename selftest helper write_clean_state to _write_clean_state`

@@ -65,8 +65,22 @@ ROUND_RE = re.compile(r"-r(\d+)\.md$")
 # whose sidecar lacks a conforming field. Deleting the legacy grammar is
 # TIME-GATED and tracked in the spin-off backlog item
 # ``docs/history/backlog/2026-09-05-plan-readiness-legacy-verdict-grammar-deletion.md``
-# (eligible only once ``--sweep`` coverage reports covered equal to total).
+# (eligible only once ``--sweep`` coverage reports a positive total with covered equal to total).
 VERDICT_TOKEN_RE = re.compile(r"\bready\s*=\s*(yes|no)\b", re.IGNORECASE)
+
+# Plans reviewed on or after this date must carry the decision-points trailer
+# (plans skill Step 1.4 confirmation, carried into ## Assumptions). Plans with
+# an earlier latest-round date are legacy and stay exempt: the rule is
+# forward-looking and does not retrofit already-certified plans (origin
+# backlog exclusion).
+DECISION_MARKER_MIN_DATE = "2026-09-08"
+
+# The trailer line in plan bytes: "Decision points requiring a grill: <value>".
+# The bolded "**Decision points requiring a grill:**" form is the Step 1.4
+# chat template and never matches; the plan-file trailer is plain.
+DECISION_MARKER_RE = re.compile(
+    r"^Decision points requiring a grill:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE
+)
 
 
 def sidecar_verdict(payload: dict) -> str | None:
@@ -133,13 +147,123 @@ def latest_review_round(reviews_dir: Path, slug: str) -> tuple[Path, int] | None
     return path, round_no
 
 
-def summary_section(content: str) -> str:
-    """Text of the ``## Summary`` section (empty when absent)."""
-    match = re.search(r"^## Summary\s*$", content, re.MULTILINE)
+def md_section(text: str, heading: str) -> str:
+    """Text of the ``## <heading>`` section, or ``""`` when absent.
+
+    Fail-closed: an absent heading yields an empty string, so a trailer
+    gate scoped to one section never falls back to matching a trailer
+    line elsewhere in the whole document.
+    """
+    match = re.search(
+        rf"^## {re.escape(heading)}\s*$", text, re.MULTILINE
+    )
     if not match:
         return ""
-    tail = content[match.end() :]
+    tail = text[match.end() :]
     return re.split(r"\n## ", tail, maxsplit=1)[0]
+
+
+def summary_section(content: str) -> str:
+    """Text of the ``## Summary`` section (empty when absent)."""
+    return md_section(content, "Summary")
+
+
+# Placeholder vocabulary for trailer values: a value is unresolved when its
+# start is pending, tbd, or todo (case-insensitive) followed by end of
+# value, whitespace, or more word characters. The boundary is a negative
+# lookahead for the HYPHEN character only — not ``\b`` and not word
+# characters: a stem followed immediately by a hyphen is treated as a
+# resolved receipt, so ``todo-list ownership: ...`` and ``tbd-for-now``
+# pass, while ``todos``, ``pending2``, and ``TBD for now`` fail. The
+# hyphen carve-out is load-bearing for the pinned ``todo-list`` receipt
+# (r2 F2); ``\b`` would also match at the hyphen boundary and wrongly
+# reject it. Lookalikes with trailing word characters fail (r3 F3).
+# The ``<`` template-token check is separate (r2 F2).
+_PLACEHOLDER_RE = re.compile(r"^(pending|tbd|todo)(?!-)", re.IGNORECASE)
+
+
+# Fence opener: 3+ backticks or 3+ tildes, optionally followed by an info
+# string (CommonMark lets the OPENER carry one, e.g. ```text or ~~~markdown).
+_FENCE_OPENER_RE = re.compile(r"^(`{3,}|~{3,})")
+# Fence closer: a BARE run of fence characters with only optional trailing
+# whitespace — an info string on a closer line means it is fence CONTENT,
+# not a closer (CommonMark).
+_FENCE_CLOSER_RE = re.compile(r"^(`{3,}|~{3,})[ \t]*$")
+
+
+def _strip_fences(text: str) -> str:
+    """Remove fenced code blocks so quoted template text cannot match.
+
+    Single-active-fence-state parser (r2 F1, r3 F2/F4, r4 F1): honors BOTH
+    CommonMark fence syntaxes (backtick ``` and tilde ``~~~``). An OPENER
+    is a run of 3+ fence characters (optionally carrying an info string,
+    e.g. ```` ```text ````), indented at most 3 spaces; the opener's
+    character and run length are recorded. A CLOSER is a bare run of the
+    SAME character, at least as long as the opener, with only optional
+    trailing whitespace and at most 3 leading spaces — a closer line
+    carrying info text (```` ``` note ````) or a shorter same-character
+    run does not close the fence, and a longer run never closes a shorter
+    one early in the fail-open direction. While one fence is open, only
+    such a closer toggles it, so a stray ``` line inside a tilde block
+    cannot desync the parser. An unterminated fence stays open at end of
+    input, so everything it swallowed is dropped: fail-closed, never
+    fail-open. Applied to the WHOLE document BEFORE section extraction, so
+    a fenced ``## `` heading can never truncate a section and a stray
+    inline triple backtick can never pair with a later fence opener to
+    delete real content.
+    """
+    out = []
+    fence = None  # (fence character, opener run length) when open
+    for line in text.splitlines():
+        stripped = line.lstrip()
+        lead = len(line) - len(stripped)
+        if fence is None:
+            m = _FENCE_OPENER_RE.match(stripped) if lead <= 3 else None
+            if m:
+                fence = (m.group(1)[0], len(m.group(1)))
+            else:
+                out.append(line)
+            continue
+        m = _FENCE_CLOSER_RE.match(stripped) if lead <= 3 else None
+        if (
+            m
+            and m.group(1)[0] == fence[0]
+            and len(m.group(1)) >= fence[1]
+        ):
+            fence = None
+        # Any other line is fence content: dropped, not emitted.
+    return "\n".join(out)
+
+
+def decision_marker_problem(plan_text: str) -> str | None:
+    """Reason when the decision-points trailer is missing or unresolved.
+
+    ``None`` when the single trailer line inside the ``## Assumptions``
+    section reads ``none remain.`` (case-insensitive, trailing period
+    optional) or carries a non-placeholder receipt; a named reason
+    otherwise. Placeholder-prefixed values (starting with the words
+    ``pending``, ``tbd``, or ``todo``, or a ``<`` template token) are
+    unresolved. Fenced code blocks are stripped from the WHOLE document
+    FIRST, then the ``## Assumptions`` section is extracted from the
+    stripped text (so a fenced heading cannot truncate the section); an
+    unterminated fence fails closed by dropping everything it swallowed.
+    More than one trailer line is ambiguous and is rejected on its own
+    reason (r4 F1: last-wins would let an unresolved line hide under a
+    terminal none-remain line).
+    """
+    values = DECISION_MARKER_RE.findall(
+        md_section(_strip_fences(plan_text), "Assumptions")
+    )
+    if not values:
+        return "missing decision-points trailer"
+    if len(values) > 1:
+        return f"ambiguous decision-points trailer: {len(values)} lines"
+    value = values[0]
+    if value.strip().lower() in {"none remain.", "none remain"}:
+        return None
+    if value.lstrip().startswith("<") or _PLACEHOLDER_RE.match(value.lstrip()):
+        return f"unresolved decision-points trailer: {value!r}"
+    return None
 
 
 def digest_failure_reason(first_error: str, round_no: int) -> str:
@@ -277,9 +401,10 @@ def evaluate_readiness(
             f"cannot read review artifact r{round_no} (not valid UTF-8): {exc}"
         )
     try:
-        expected_digest = vrs.compute_source_digest("plan", resolved.read_bytes())
+        plan_bytes = resolved.read_bytes()
     except OSError as exc:
         return False, f"cannot read plan bytes to compute digest: {exc}"
+    expected_digest = vrs.compute_source_digest("plan", plan_bytes)
 
     # 3. Shared sidecar gate: the SAME validation the staging validator runs
     # (schema validity, then source_kind, then digest — the sequencing the
@@ -342,6 +467,35 @@ def evaluate_readiness(
             f"latest review r{round_no} has unresolved blocking findings "
             f"(is_review_ready is False)"
         )
+
+    # 6. Decision-points trailer (forward-looking): plans whose LATEST round
+    # is dated on or after DECISION_MARKER_MIN_DATE must carry the trailer
+    # in their bytes; legacy rounds stay exempt (no retrofit). A sidecar
+    # with a missing, empty, or whitespace-only date, or a date that is
+    # not exactly ``YYYY-MM-DD`` (malformed, e.g. ``09/10/2026``), is also
+    # exempt: the schema does not hard-require the field on versionless
+    # current-shape sidecars, and a malformed value must not reach the
+    # lexicographic gate comparison (r4 F4); failing those would retrofit
+    # legacy artifacts; the authoring-side prose gate covers newly
+    # authored plans regardless (r1 F3). The plan bytes read once above
+    # for the digest are decoded here; only a decode failure can still
+    # reach this reason family.
+    round_date = str(payload.get("date") or "").strip()
+    if (
+        re.fullmatch(r"\d{4}-\d{2}-\d{2}", round_date)
+        and round_date >= DECISION_MARKER_MIN_DATE
+    ):
+        try:
+            plan_text = plan_bytes.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            return False, f"cannot read plan bytes for trailer check: {exc}"
+        problem = decision_marker_problem(plan_text)
+        if problem:
+            return False, (
+                f"{problem} (required for plans reviewed on or after "
+                f"{DECISION_MARKER_MIN_DATE}; latest round r{round_no} is "
+                f"dated {round_date})"
+            )
 
     return True, None
 
@@ -642,7 +796,7 @@ def _clean_reviews_dir(reviews_dir: Path) -> None:
         path.unlink()
 
 
-def write_clean_state(
+def _write_clean_state(
     plans_dir: Path,
     reviews_dir: Path,
     plan_text: str = "# Fixture plan\n\nBody.\n",
@@ -661,6 +815,7 @@ def write_clean_state(
         "plan", plan.read_bytes()
     )
     sidecar = _clear_sidecar(digest, source_kind)
+    sidecar["date"] = date
     if blocking:
         sidecar["findings"] = [
             {
@@ -718,7 +873,7 @@ def _selftest_sidecar_shapes(
     _clean_reviews_dir(reviews_dir)
 
     # missing_sidecar: latest round Markdown present, no .stats.json.
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     review.with_suffix(".stats.json").unlink()
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
@@ -729,7 +884,7 @@ def _selftest_sidecar_shapes(
     _clean_reviews_dir(reviews_dir)
 
     # malformed_sidecar (invalid JSON arm).
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     review.with_suffix(".stats.json").write_text("{not json", encoding="utf-8")
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
@@ -852,7 +1007,7 @@ def _selftest_source_and_digest(
     # sidecar-gate condition (no ordinal: the shared gate owns the
     # schema/kind/digest sequence; do not renumber against the numbered
     # comments inside evaluate_readiness).
-    plan, _ = write_clean_state(plans_dir, reviews_dir, source_kind="code")
+    plan, _ = _write_clean_state(plans_dir, reviews_dir, source_kind="code")
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#wrong_source_kind",
@@ -865,7 +1020,7 @@ def _selftest_source_and_digest(
     # r6 Z1: source_kind bypassable by omission/null on versionless
     # current-shape sidecars (the shared gate only checks a DECLARED
     # kind). Both arms must exit 1 with the named reason.
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     missing_kind = _clear_sidecar(
         vrs.compute_source_digest("plan", plan.read_bytes())
     )
@@ -897,7 +1052,7 @@ def _selftest_source_and_digest(
     _clean_reviews_dir(reviews_dir)
 
     # valid_schema_wrong_digest: schema passes, digest hashes other bytes.
-    plan, review = write_clean_state(
+    plan, review = _write_clean_state(
         plans_dir, reviews_dir, digest_override="a" * 64
     )
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
@@ -912,7 +1067,7 @@ def _selftest_source_and_digest(
     # MISMATCH; missing or non-hex digests get the distinct
     # "invalid or missing" family; an unrecognized shared-validator digest
     # error gets the fallback wording that embeds the raw error.
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     missing = _clear_sidecar(
         vrs.compute_source_digest("plan", plan.read_bytes())
     )
@@ -954,7 +1109,7 @@ def _selftest_source_and_digest(
     _clean_reviews_dir(reviews_dir)
 
     # stale_digest_after_plan_edit + review edited after validation.
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#stale_digest_after_plan_edit/initial_pass",
@@ -990,7 +1145,7 @@ def _selftest_source_and_digest(
     _clean_reviews_dir(reviews_dir)
 
     # ready_no_verdict: ready=no with zero blocking findings.
-    plan, _ = write_clean_state(plans_dir, reviews_dir, verdict="no")
+    plan, _ = _write_clean_state(plans_dir, reviews_dir, verdict="no")
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#ready_no_verdict",
@@ -1008,7 +1163,7 @@ def _selftest_verdict_grammar(
     # verdict over Summary grammar. Three RED (precedence not
     # implemented yet) + two GREEN characterization (fallback must
     # survive unchanged).
-    plan, review = write_clean_state(plans_dir, reviews_dir)
+    plan, review = _write_clean_state(plans_dir, reviews_dir)
     sc = _clear_sidecar(vrs.compute_source_digest("plan", plan.read_bytes()))
     sc["verdict"] = "yes"
     review.write_text(
@@ -1031,7 +1186,7 @@ def _selftest_verdict_grammar(
     )
     _clean_reviews_dir(reviews_dir)
 
-    plan, review = write_clean_state(plans_dir, reviews_dir, verdict="yes")
+    plan, review = _write_clean_state(plans_dir, reviews_dir, verdict="yes")
     sc = _clear_sidecar(vrs.compute_source_digest("plan", plan.read_bytes()))
     sc["verdict"] = "no"
     review.with_suffix(".stats.json").write_text(
@@ -1046,7 +1201,7 @@ def _selftest_verdict_grammar(
     )
     _clean_reviews_dir(reviews_dir)
 
-    plan, review = write_clean_state(plans_dir, reviews_dir, verdict="no")
+    plan, review = _write_clean_state(plans_dir, reviews_dir, verdict="no")
     sc = _clear_sidecar(vrs.compute_source_digest("plan", plan.read_bytes()))
     sc["verdict"] = "yes"
     review.with_suffix(".stats.json").write_text(
@@ -1063,7 +1218,7 @@ def _selftest_verdict_grammar(
     # legacy_verdict_junk_falls_back (characterization): a
     # non-conforming verdict value neither decides nor fails readiness;
     # the Summary rule runs unchanged.
-    plan, review = write_clean_state(plans_dir, reviews_dir, verdict="yes")
+    plan, review = _write_clean_state(plans_dir, reviews_dir, verdict="yes")
     sc = _clear_sidecar(vrs.compute_source_digest("plan", plan.read_bytes()))
     sc["verdict"] = "maybe"
     review.with_suffix(".stats.json").write_text(
@@ -1075,7 +1230,7 @@ def _selftest_verdict_grammar(
         ok and reason is None,
         f"ok={ok} reason={reason}",
     )
-    plan, review = write_clean_state(plans_dir, reviews_dir, verdict="no")
+    plan, review = _write_clean_state(plans_dir, reviews_dir, verdict="no")
     sc = _clear_sidecar(vrs.compute_source_digest("plan", plan.read_bytes()))
     sc["verdict"] = {"ready": False}
     review.with_suffix(".stats.json").write_text(
@@ -1092,7 +1247,7 @@ def _selftest_verdict_grammar(
 
     # absent_falls_back_to_summary (characterization): no verdict field,
     # Summary decides exactly as today.
-    plan, _ = write_clean_state(plans_dir, reviews_dir, verdict="no")
+    plan, _ = _write_clean_state(plans_dir, reviews_dir, verdict="no")
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#verdict_field/absent_falls_back_to_summary",
@@ -1105,7 +1260,7 @@ def _selftest_verdict_grammar(
     # verdict_outside_summary_rejects (r5 Y3): a ready=yes token that
     # appears ONLY in ## Findings is not a Summary verdict; the Summary
     # scoping must not silently widen to the whole document.
-    plan, review = write_clean_state(
+    plan, review = _write_clean_state(
         plans_dir, reviews_dir, verdict_line="- verdict deferred"
     )
     content = _review_markdown(verdict_line="- verdict deferred")
@@ -1124,7 +1279,7 @@ def _selftest_verdict_grammar(
     # boundary_violating_mention_rejects (r5 Y4): ``Notready=yes`` is
     # NOT a word-bounded verdict token; as the ONLY Summary mention it
     # must yield no verdict (reject), proving the \b anchors.
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir, reviews_dir, verdict_line="- Notready=yes"
     )
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
@@ -1170,7 +1325,7 @@ def _selftest_verdict_grammar(
         "The panel concludes this plan is ready=yes overall.",
     ]
     for idx, line in enumerate(corpus_shapes):
-        plan, _ = write_clean_state(plans_dir, reviews_dir, verdict_line=line)
+        plan, _ = _write_clean_state(plans_dir, reviews_dir, verdict_line=line)
         ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
         check(
             f"selftest#verdict_line_shapes/corpus_yes_{idx}",
@@ -1198,7 +1353,7 @@ def _selftest_verdict_grammar(
         "One blocker stands unresolved against the current digest. **ready=no**.",
     ]
     for idx, line in enumerate(corpus_no_shapes):
-        plan, _ = write_clean_state(plans_dir, reviews_dir, verdict_line=line)
+        plan, _ = _write_clean_state(plans_dir, reviews_dir, verdict_line=line)
         ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
         check(
             f"selftest#verdict_line_shapes/corpus_no_{idx}_rejects",
@@ -1209,7 +1364,7 @@ def _selftest_verdict_grammar(
 
     # last-wins across lines: an earlier ready=yes is overridden by a
     # later ready=no in the same Summary (total rule, per line).
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir,
         reviews_dir,
         verdict_line="- ready=yes\n- Verdict: ready=no (one blocker re-confirmed)",
@@ -1224,7 +1379,7 @@ def _selftest_verdict_grammar(
 
     # last-wins in the other direction: an earlier ready=no is rescued
     # by a later canonical ready=yes line.
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir,
         reviews_dir,
         verdict_line="- Verdict: ready=no (superseded by the fold below)\nVerdict: ready=yes",
@@ -1243,7 +1398,7 @@ def _selftest_paths_and_blocking(
 ) -> None:
     """Blocking-finding and plan/reviews path-shape family."""
     # unresolved_blocking_finding: ready=yes, one blocking:true unresolved.
-    plan, _ = write_clean_state(plans_dir, reviews_dir, blocking=True)
+    plan, _ = _write_clean_state(plans_dir, reviews_dir, blocking=True)
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#unresolved_blocking_finding",
@@ -1304,7 +1459,7 @@ def _selftest_round_selection(
 ) -> None:
     """Round discovery, tie-break, and slug-matching family."""
     # latest_round_selection: r1 clean (newer mtime), r2 not; r2 decides.
-    plan, r1 = write_clean_state(
+    plan, r1 = _write_clean_state(
         plans_dir, reviews_dir, round_suffix="r1", date="2026-09-01"
     )
     digest = vrs.compute_source_digest("plan", plan.read_bytes())
@@ -1329,7 +1484,7 @@ def _selftest_round_selection(
     # artifact is invisible to BOTH the discovery glob and ROUND_RE (a
     # consistent lowercase-only pair), so a clean uppercase r2 must NOT
     # rescue a rejecting lowercase r1.
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir, reviews_dir, verdict="no", round_suffix="r1"
     )
     digest = vrs.compute_source_digest("plan", plan.read_bytes())
@@ -1352,7 +1507,7 @@ def _selftest_round_selection(
     # earlier-dated artifact and its sidecar are forced to a year-2100
     # mtime so any mtime participation would flip the winner.
     # Arm 1: later-dated ready=no decides -> not-ok mentioning r1.
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir, reviews_dir, verdict="yes", round_suffix="r1", date="2026-09-01"
     )
     digest = vrs.compute_source_digest("plan", plan.read_bytes())
@@ -1375,7 +1530,7 @@ def _selftest_round_selection(
 
     # Arm 2: inverted polarity — later-dated ready=yes decides -> ok,
     # under the same adversarial mtime on the earlier-dated pair.
-    plan, _ = write_clean_state(
+    plan, _ = _write_clean_state(
         plans_dir, reviews_dir, verdict="no", round_suffix="r1", date="2026-09-01"
     )
     digest = vrs.compute_source_digest("plan", plan.read_bytes())
@@ -1402,7 +1557,7 @@ def _selftest_round_selection(
     # glob_metachar_slug: a plan slug containing glob metacharacters
     # (e.g. ``fixture[1]``) must still discover its review artifact —
     # pins the glob.escape in latest_review_round.
-    plan, _ = write_clean_state(plans_dir, reviews_dir, slug="fixture[1]")
+    plan, _ = _write_clean_state(plans_dir, reviews_dir, slug="fixture[1]")
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#glob_metachar_slug",
@@ -1420,11 +1575,404 @@ def _selftest_round_selection(
     )
 
 
+def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None:
+    """Decision-points trailer family: gated vs legacy rounds, shapes.
+
+    r4 F6: the standard arms are one tuple-driven table. Each tuple is
+    (check-name suffix, plan_text, date, expect_ok, expected reason
+    substring or None); the pass/fail assertion distinguishes pass-arms
+    (``ok and reason is None``) from fail-arms (``not ok and needle in
+    (reason or "")``). Every ``selftest#decision_marker/*`` check name is
+    verbatim from the pre-refactor family; the sidecar-mutation arms
+    (missing/blank/malformed date) stay bespoke below because they edit
+    the sidecar after the fixture write, and the fence-boundary comments
+    sit beside their tuples.
+    """
+    trailer = "Decision points requiring a grill: "
+
+    # Standard arms: (suffix, plan_text, date, expect_ok, needle).
+    arms: list[tuple[str, str, str, bool, str | None]] = [
+        # gated_none_remain_passes.
+        (
+            "gated_none_remain_passes",
+            f"# P\n\n## Assumptions\n\n{trailer}none remain.\n",
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_none_remain_lenient_form_passes (r2 F3): the gate accepts
+        # the literal none-remain line case-insensitively with an OPTIONAL
+        # trailing period.
+        (
+            "gated_none_remain_lenient_form_passes",
+            f"# P\n\n## Assumptions\n\n{trailer}None remain\n",
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_missing_trailer_fails.
+        (
+            "gated_missing_trailer_fails",
+            "# P\n\nBody.\n",
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # gated_placeholder_trailer_fails.
+        (
+            "gated_placeholder_trailer_fails",
+            f"# P\n\n## Assumptions\n\n{trailer}<point>: <receipt>\n",
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # gated_receipt_passes.
+        (
+            "gated_receipt_passes",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}cleanup scope: ledger-only plan "
+                "(user confirmed 2026-09-07)\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_multiple_receipts_one_line_passes (r1 F1): all per-point
+        # receipts on ONE trailer line (semicolon-separated); one line per
+        # point would be ambiguous.
+        (
+            "gated_multiple_receipts_one_line_passes",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}cleanup scope: ledger-only "
+                "(user confirmed 2026-09-07); deployment note: none needed "
+                "(sources decide)\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_no_assumptions_heading_fails (r1 F2): with NO ##
+        # Assumptions heading the section extraction is fail-closed
+        # (empty), so a trailer line inside ## Notes cannot satisfy the
+        # gate.
+        (
+            "gated_no_assumptions_heading_fails",
+            (
+                "# P\n\n## Notes\n\n"
+                "Decision points requiring a grill: none remain.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_inside_fence_fails (r1 F3): a fenced template quote
+        # under ## Assumptions is stripped before matching.
+        (
+            "trailer_inside_fence_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                "Decision points requiring a grill: none remain.\n"
+                "```\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_unterminated_fence_fails (r2 F1): an unterminated fence
+        # fails CLOSED: the fence-state parser stays open to end of input
+        # and drops everything it swallowed.
+        (
+            "trailer_unterminated_fence_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                f"{trailer}none remain.\n"
+                "trailer text inside the still-open fence\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # heading_inside_fence_under_assumptions_passes (r2 F1): a fenced
+        # ``## `` heading line must not truncate the section; a real
+        # trailer after the fence still passes.
+        (
+            "heading_inside_fence_under_assumptions_passes",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                "## Notes\n```\n\n"
+                f"{trailer}none remain.\n\n## Gist\n\nBody.\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_pending_word_trailer_fails (r1 F6): a value merely
+        # STARTING with a placeholder token is unresolved (`TBD for now`
+        # used to pass).
+        (
+            "gated_pending_word_trailer_fails",
+            f"# P\n\n## Assumptions\n\n{trailer}TBD for now\n",
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # gated_todo_prefixed_receipt_passes (r2 F2): a RESOLVED receipt
+        # whose first word only STARTS with the placeholder letters
+        # (``todo-list ...``) passes.
+        (
+            "gated_todo_prefixed_receipt_passes",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}todo-list ownership: user takes it "
+                "(confirmed 2026-09-07)\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_hyphenated_placeholder_passes (r4 F2, characterization):
+        # the hyphen carve-out treats ANY stem-hyphen value as a resolved
+        # receipt, so ``tbd-for-now`` passes (the regex cannot tell it
+        # from a real receipt without semantics; the boundary is pinned,
+        # not perfected).
+        (
+            "gated_hyphenated_placeholder_passes",
+            f"# P\n\n## Assumptions\n\n{trailer}tbd-for-now\n",
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # legacy_missing_trailer_passes: a round dated before the constant
+        # is exempt (no retrofit of already-certified plans).
+        (
+            "legacy_missing_trailer_passes",
+            "# P\n\nBody.\n",
+            "2026-09-07",
+            True,
+            None,
+        ),
+        # trailer_outside_assumptions_fails (r3 F1): a later quoted
+        # template mention outside ## Assumptions can never satisfy the
+        # gate.
+        (
+            "trailer_outside_assumptions_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n"
+                "## Notes\n\nDecision points requiring a grill: none remain.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # ambiguous_two_trailer_lines_fails (r4 F1): an unresolved line
+        # above a terminal "none remain." line must not pass on last-wins
+        # semantics.
+        (
+            "ambiguous_two_trailer_lines_fails",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}<point>: <receipt>\n\n{trailer}none remain.\n"
+            ),
+            "2026-09-08",
+            False,
+            "ambiguous decision-points trailer",
+        ),
+        # trailer_tilde_fence_fails (r3 F2): a quoted template line inside
+        # a TILDE fence (~~~) with an INFO-STRING OPENER (~~~markdown) is
+        # stripped like a backtick fence.
+        (
+            "trailer_tilde_fence_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n~~~markdown\n"
+                f"{trailer}none remain.\n"
+                "~~~\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_after_tilde_block_with_stray_backticks_passes (r3 F2): a
+        # ``` line that is LITERAL TEXT inside a tilde block must not
+        # toggle the fence state (single-active-fence-character parser).
+        (
+            "trailer_after_tilde_block_with_stray_backticks_passes",
+            (
+                "# P\n\n## Assumptions\n\n~~~\n"
+                "quoted template example\n"
+                "```\n"
+                "~~~\n\n"
+                f"{trailer}none remain.\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_placeholder_lookalike_trailer_fails (r3 F3): lookalike
+        # tokens with trailing word characters (``todos``) are unresolved.
+        (
+            "gated_placeholder_lookalike_trailer_fails",
+            f"# P\n\n## Assumptions\n\n{trailer}todos\n",
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # gated_pending_placeholder_trailer_fails (r3 F6): the ``pending``
+        # alternative of the placeholder regex has its own witness.
+        (
+            "gated_pending_placeholder_trailer_fails",
+            f"# P\n\n## Assumptions\n\n{trailer}pending user answer\n",
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # trailer_swallowed_by_earlier_unterminated_fence_fails (r3 F7):
+        # an unterminated fence opening BEFORE ## Assumptions swallows the
+        # heading and trailer; pins the strip-before-extract ordering.
+        (
+            "trailer_swallowed_by_earlier_unterminated_fence_fails",
+            (
+                "# P\n\n```\nbroken fence\n\n## Assumptions\n\n"
+                "Decision points requiring a grill: none remain.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_inside_close_with_info_text_fails (r4 F1): a closer line
+        # carrying info text (```` ``` note ````) is fence CONTENT, not a
+        # closer; CommonMark keeps the fence open, so the quoted trailer
+        # stays invisible.
+        (
+            "trailer_inside_close_with_info_text_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                f"{trailer}none remain.\n"
+                "``` note\n\nBody.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_inside_short_close_fails (r4 F1): a 3-backtick line does
+        # NOT close a 4-backtick opener (closer run must be at least the
+        # opener run); the quoted trailer stays inside the open fence.
+        (
+            "trailer_inside_short_close_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n````\n"
+                f"{trailer}none remain.\n"
+                "```\n\nBody.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # trailer_after_indent_4_closer_stays_fenced (r4 F5): a closer
+        # line with exactly 4 leading spaces is outside the <=3 indent
+        # bound, so the fence stays open and the quoted trailer is
+        # invisible.
+        (
+            "trailer_after_indent_4_closer_stays_fenced",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                f"{trailer}none remain.\n"
+                "    ```\n\nBody.\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+    ]
+
+    for suffix, plan_text, date, expect_ok, needle in arms:
+        plan, _ = _write_clean_state(
+            plans_dir, reviews_dir, plan_text=plan_text, date=date
+        )
+        ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+        if expect_ok:
+            passed = ok and reason is None
+        else:
+            passed = not ok and needle in (reason or "")
+        check(
+            f"selftest#decision_marker/{suffix}",
+            passed,
+            f"ok={ok} reason={reason}",
+        )
+        _clean_reviews_dir(reviews_dir)
+
+    # Sidecar-mutation arms (bespoke: they edit the sidecar after the
+    # fixture write).
+
+    # sidecar_date_missing_exempt (characterization, r2 F1): a
+    # current-shape sidecar without a date key is exempt from the trailer
+    # gate; the schema does not hard-require the field and failing it
+    # would retrofit legacy artifacts.
+    plan, review = _write_clean_state(
+        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
+    )
+    sidecar = json.loads(
+        review.with_suffix(".stats.json").read_text(encoding="utf-8")
+    )
+    del sidecar["date"]
+    review.with_suffix(".stats.json").write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#decision_marker/sidecar_date_missing_exempt",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # sidecar_date_blank_exempt (r2 F4): a whitespace-only sidecar date is
+    # exempt exactly like a missing one.
+    plan, review = _write_clean_state(
+        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
+    )
+    sidecar = json.loads(
+        review.with_suffix(".stats.json").read_text(encoding="utf-8")
+    )
+    sidecar["date"] = " "
+    review.with_suffix(".stats.json").write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#decision_marker/sidecar_date_blank_exempt",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # sidecar_date_malformed_exempt (r4 F4): a non-ISO date (09/10/2026)
+    # is exempt like a missing or blank one; a malformed value must not
+    # reach the lexicographic gate comparison.
+    plan, review = _write_clean_state(
+        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
+    )
+    sidecar = json.loads(
+        review.with_suffix(".stats.json").read_text(encoding="utf-8")
+    )
+    sidecar["date"] = "09/10/2026"
+    review.with_suffix(".stats.json").write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#decision_marker/sidecar_date_malformed_exempt",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
 def _selftest_accepted_state(
     plans_dir: Path, reviews_dir: Path, check
 ) -> None:
     """accepted_state: exit 0 and no reason output."""
-    plan, _ = write_clean_state(plans_dir, reviews_dir)
+    plan, _ = _write_clean_state(plans_dir, reviews_dir)
     ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
     check(
         "selftest#accepted_state",
@@ -1448,7 +1996,7 @@ def _selftest_cli(
         encoding="utf-8",
     )
 
-    plan, _ = write_clean_state(plans_dir, reviews_dir)
+    plan, _ = _write_clean_state(plans_dir, reviews_dir)
 
     prev_cwd = os.getcwd()
     os.chdir(root)  # repo_root() anchors at the process cwd
@@ -1530,7 +2078,7 @@ def _selftest_cli(
         )
 
         # rejected: exit 1 with the readiness FAILED: prefix on stderr.
-        plan2, _ = write_clean_state(plans_dir, reviews_dir, verdict="no")
+        plan2, _ = _write_clean_state(plans_dir, reviews_dir, verdict="no")
         rc, out, err = _selftest_run_cli(plan2)
         check(
             "selftest#cli/rejected_state",
@@ -1558,7 +2106,7 @@ def _selftest_cli(
             "```\n",
             encoding="utf-8",
         )
-        plan, _ = write_clean_state(plans_dir, reviews_dir)
+        plan, _ = _write_clean_state(plans_dir, reviews_dir)
         subprocess.run(
             ["git", "-C", str(root), "init", "-q"], check=False
         )
@@ -1576,7 +2124,7 @@ def _selftest_cli(
         # plan path that EXISTS relative to the process cwd prefers the
         # cwd interpretation over repo-root re-rooting (root/../plans
         # does not exist and would false-reject).
-        plan, _ = write_clean_state(plans_dir, reviews_dir)
+        plan, _ = _write_clean_state(plans_dir, reviews_dir)
         rc, out, err = _selftest_run_cli(Path("..") / "plans" / plan.name)
         check(
             "selftest#cli/cwd_relative_dotdot",
@@ -1645,7 +2193,7 @@ def _selftest_sweep(
         _clean_reviews_dir(reviews_dir)
         # (a) anomaly: Summary's ready= is split across two lines — the
         # sweep mention fires, the per-line total rule finds no token.
-        write_clean_state(plans_dir, reviews_dir, verdict_line="- ready=\nyes")
+        _write_clean_state(plans_dir, reviews_dir, verdict_line="- ready=\nyes")
         rc, out, err = _selftest_run_main(["--sweep"])
         check(
             "selftest#sweep/anomaly_split_ready_returns_1",
@@ -1656,7 +2204,7 @@ def _selftest_sweep(
         )
         _clean_reviews_dir(reviews_dir)
         # (b) clean: a plain ready=yes review sweeps to 0.
-        write_clean_state(plans_dir, reviews_dir)
+        _write_clean_state(plans_dir, reviews_dir)
         rc_sweep = run_sweep(reviews_dir)
         check(
             "selftest#sweep/clean_returns_0",
@@ -1762,7 +2310,7 @@ def _selftest_sweep(
         )
         (root / "reviews-gone").rename(reviews_dir)
         # (e) r5 Y7: plan_path combined with --sweep is a usage error.
-        plan, _ = write_clean_state(plans_dir, reviews_dir)
+        plan, _ = _write_clean_state(plans_dir, reviews_dir)
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             try:
@@ -1781,8 +2329,8 @@ def _selftest_sweep(
         # date-prefixed path) whose sidecar carries "verdict": "yes" —
         # prints 1/2; rc 0.
         _clean_reviews_dir(reviews_dir)
-        write_clean_state(plans_dir, reviews_dir)
-        _, review_dated = write_clean_state(plans_dir, reviews_dir, date="2026-09-02")
+        _write_clean_state(plans_dir, reviews_dir)
+        _, review_dated = _write_clean_state(plans_dir, reviews_dir, date="2026-09-02")
         dated_sidecar = review_dated.with_suffix(".stats.json")
         dated_payload = json.loads(
             dated_sidecar.read_text(encoding="utf-8")
@@ -1794,7 +2342,7 @@ def _selftest_sweep(
         # r1 F1: third artifact at a distinct date whose sidecar carries a
         # legacy NON-CONFORMING dict verdict; presence is NOT coverage;
         # only the conforming "yes" arm counts, so coverage stays 1/3.
-        _, review_legacy = write_clean_state(plans_dir, reviews_dir, date="2026-09-03")
+        _, review_legacy = _write_clean_state(plans_dir, reviews_dir, date="2026-09-03")
         legacy_sidecar = review_legacy.with_suffix(".stats.json")
         legacy_payload = json.loads(
             legacy_sidecar.read_text(encoding="utf-8")
@@ -1812,7 +2360,7 @@ def _selftest_sweep(
         _clean_reviews_dir(reviews_dir)
         # (f2) Task 4: a malformed sidecar (not JSON) counts as NOT
         # covered and is NOT an anomaly; 0/2, rc 0, no crash.
-        write_clean_state(plans_dir, reviews_dir)
+        _write_clean_state(plans_dir, reviews_dir)
         malformed_review = reviews_dir / (
             "2026-09-02-plan-review-fixture-feature-r1.md"
         )
@@ -1887,6 +2435,7 @@ def run_selftest() -> int:
         _selftest_verdict_grammar(plans_dir, reviews_dir, check)
         _selftest_paths_and_blocking(root, plans_dir, reviews_dir, check)
         _selftest_round_selection(plans_dir, reviews_dir, check)
+        _selftest_decision_marker(plans_dir, reviews_dir, check)
         _selftest_accepted_state(plans_dir, reviews_dir, check)
         _selftest_cli(root, plans_dir, reviews_dir, check)
         _selftest_sweep(root, plans_dir, reviews_dir, check)

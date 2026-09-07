@@ -1,6 +1,6 @@
 # Backlog: plans must separate facts from unresolved design decisions
 
-Status: open
+Status: done
 Workflow: backlog
 Source: user correction during a plan-authoring session, 2026-09-07
 Severity: Medium

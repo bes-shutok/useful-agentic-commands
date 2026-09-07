@@ -118,61 +118,61 @@ if grep -qF "strongly supported by repo evidence" "$P"; then echo "STALE: old Hi
 Files:
 - `agents/skills/plans/SKILL.md`
 
-- [ ] Record the current HEAD sha as `<base>` in the session notes before this task's commit (Task 8 uses it for the scope-integrity check).
-- [ ] In the confidence gate block, replace the first sentence of the High-confidence bullet (today: `exactly one interpretation is strongly supported by repo evidence, established convention, or an already-confirmed decision, and a wrong call is cheap to correct during implementation.`) with: `exactly one reasonable interpretation exists, choosing any other would be unreasonable or is cheap to correct, and that interpretation is supported by repo evidence, established convention, or an already-confirmed user decision.` Keep the rest of the bullet unchanged.
-- [ ] Immediately after the High-confidence bullet (the last tier bullet, before the Scope-extension hard gate paragraph), insert:
+- [x] Record the current HEAD sha as `<base>` in the session notes before this task's commit (Task 8 uses it for the scope-integrity check).
+- [x] In the confidence gate block, replace the first sentence of the High-confidence bullet (today: `exactly one interpretation is strongly supported by repo evidence, established convention, or an already-confirmed decision, and a wrong call is cheap to correct during implementation.`) with: `exactly one reasonable interpretation exists, choosing any other would be unreasonable or is cheap to correct, and that interpretation is supported by repo evidence, established convention, or an already-confirmed user decision.` Keep the rest of the bullet unchanged.
+- [x] Immediately after the High-confidence bullet (the last tier bullet, before the Scope-extension hard gate paragraph), insert:
 
 ```markdown
 **Facts versus decisions (gate dividing line):** source verification resolves facts (what exists, what the sources already decide), not unselected design trade-offs. A material decision point is any choice between two or more plausible plan shapes that differ in scope, source-of-truth ownership, module boundary, compatibility mode, error policy, rollout shape, history strategy, preservation rules, deletion permissions, or validation evidence. Source detail never converts a decision point into a fact: authoritative sources that describe multiple alternatives leave the point low-confidence. Test every proposed task: if another reasonable design would remove, add, move, or materially change that task, the underlying choice is a low-confidence decision point regardless of source authority or detail. Do not grill factual lookups whose result is directly observable and involves no choice, and do not grill a design the user has already explicitly selected when no separate material ambiguity remains; the scope-extension hard gate below stays independent and is cross-referenced, not duplicated.
 ```
 
-- [ ] Directly after that inserted paragraph, insert:
+- [x] Directly after that inserted paragraph, insert:
 
 ```markdown
 **Confidence-gate regression cases (fail-closed routing):** (1) a single-boundary feature whose single implementation is clearly required stays eligible for a high-confidence assumption; (2) a feature with an adjacent boundary, compatibility path, or ownership choice routes to `grill-with-docs`; (3) authoritative sources describing multiple alternatives still route to the grill; (4) a cleanup request with one apparently unrelated commit beside feature work still asks the grilling scope question; (5) a cleanup request with dirty, untracked, or ignored files records preservation before any restore; (6) a source-owned prerequisite is placed under `Ship when`, not converted into an assumption or executable task; (7) an explicit user decision suppresses only the already-resolved question, never unrelated ambiguity.
 ```
 
-- [ ] Run the dedicated pins for this task (dividers, materiality test, carve-out, regression cases) in the fail-closed form of Validation Commands; expect GREEN. Also run the stale-tier sweep against the PRE-EDIT tree once first to record it fires (RED-today proof), then re-run post-edit; expect the sweep silent.
-- [ ] Commit (only the file listed above): `skills: plans fact-vs-decision confidence gate, ambiguity scan base`
+- [x] Run the dedicated pins for this task (dividers, materiality test, carve-out, regression cases) in the fail-closed form of Validation Commands; expect GREEN. Also run the stale-tier sweep against the PRE-EDIT tree once first to record it fires (RED-today proof), then re-run post-edit; expect the sweep silent.
+- [x] Commit (only the file listed above): `skills: plans fact-vs-decision confidence gate, ambiguity scan base`
 
 ### Task 2: plans ambiguity scan and requirements buffer subsection
 
 Files:
 - `agents/skills/plans/SKILL.md`
 
-- [ ] After the Cleanup scope ledger block (the paragraph ending with the checker limitation note), insert:
+- [x] After the Cleanup scope ledger block (the paragraph ending with the checker limitation note), insert:
 
 ```markdown
 **Decision-ambiguity scan (mandatory before Step 1.4):** after source discovery, separate discovered facts from decisions still requiring a choice, and record every material decision point in the requirements buffer under a `Decision points requiring a grill` heading. Each entry resolves in exactly one way: grilled via `grill-with-docs` with the user's answer recorded as a one-line receipt (decision, source, date); resolved by an already-confirmed user decision (cite its source); or the scan found no material ambiguity, which renders the literal line `Decision points requiring a grill: none remain.` in the Step 1.4 confirmation block. The subsection always renders; silently omitting it is a detectable violation of this gate.
 ```
 
-- [ ] Run the scan pin in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `skills: plans mandatory decision-ambiguity scan`
+- [x] Run the scan pin in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `skills: plans mandatory decision-ambiguity scan`
 
 ### Task 3: plans Step 1.4 decision-points block, template trailer, ledger inventory
 
 Files:
 - `agents/skills/plans/SKILL.md`
 
-- [ ] In the Step 1.4 confirmation template, insert between the Assumptions block and the Scope extensions block:
+- [x] In the Step 1.4 confirmation template, insert between the Assumptions block and the Scope extensions block:
 
 ```markdown
 **Decision points requiring a grill:** <point>: <one-line receipt: user decision, source, date>, or the literal line `Decision points requiring a grill: none remain.` when the ambiguity scan found no material decision point.
 ```
 
-- [ ] Extend the HTML meta-rule comment that follows the Scope extensions line in the same template so it also reads: an absent Decision points block is itself a detectable violation of this gate; a broad acknowledgement (sure, ok, confirmed) confirms only the material decisions explicitly named in this block; a decision about one adjacent concern is never generalized to another unlisted concern; an ambiguous lifecycle verb (skip, leave, drop, defer, preserve) must already have been restated as a concrete tree action and answered before its candidate appears here as settled.
-- [ ] In the plan template comment for Assumptions (today: `[Optional: ## Assumptions; required when Phase 1 recorded any high-confidence assumption (confidence gate); one bullet per assumption with its basis]`), replace the line with: `[Required: ## Assumptions; always renders even when empty; one bullet per high-confidence assumption with its basis, then the trailer line "Decision points requiring a grill: none remain." or per-point receipts carried from the Step 1.4 confirmation]`
-- [ ] In the plan-format bullet that requires the Assumptions section, replace `a plan that silently builds on an unlisted assumption is a defect.` with `a plan that silently builds on an unlisted assumption is a defect; the section always renders and closes with the decision-points trailer carried from the Step 1.4 confirmation, and plan_readiness.py enforces the trailer for plans whose latest review round is dated on or after 2026-09-08.`
-- [ ] In the Cleanup scope ledger block, replace `untracked paths, and explicit deletion permissions.` with `untracked paths, explicit deletion permissions, and a keep/remove/defer disposition for every non-obvious branch-only change and affected cross-cutting surface (files, interfaces, headers, configuration, documentation), each backed by direct source evidence or an explicit user decision; a broad statement such as "preserve adjacent behavior" is not a substitute for classifying each candidate surface.`
-- [ ] Run the task pins (Step 1.4 block, generic-ack meta-rule, template trailer line, ledger inventory) in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `skills: plans decision-points confirmation block, template trailer, ledger inventory`
+- [x] Extend the HTML meta-rule comment that follows the Scope extensions line in the same template so it also reads: an absent Decision points block is itself a detectable violation of this gate; a broad acknowledgement (sure, ok, confirmed) confirms only the material decisions explicitly named in this block; a decision about one adjacent concern is never generalized to another unlisted concern; an ambiguous lifecycle verb (skip, leave, drop, defer, preserve) must already have been restated as a concrete tree action and answered before its candidate appears here as settled.
+- [x] In the plan template comment for Assumptions (today: `[Optional: ## Assumptions; required when Phase 1 recorded any high-confidence assumption (confidence gate); one bullet per assumption with its basis]`), replace the line with: `[Required: ## Assumptions; always renders even when empty; one bullet per high-confidence assumption with its basis, then the trailer line "Decision points requiring a grill: none remain." or per-point receipts carried from the Step 1.4 confirmation]`
+- [x] In the plan-format bullet that requires the Assumptions section, replace `a plan that silently builds on an unlisted assumption is a defect.` with `a plan that silently builds on an unlisted assumption is a defect; the section always renders and closes with the decision-points trailer carried from the Step 1.4 confirmation, and plan_readiness.py enforces the trailer for plans whose latest review round is dated on or after 2026-09-08.`
+- [x] In the Cleanup scope ledger block, replace `untracked paths, and explicit deletion permissions.` with `untracked paths, explicit deletion permissions, and a keep/remove/defer disposition for every non-obvious branch-only change and affected cross-cutting surface (files, interfaces, headers, configuration, documentation), each backed by direct source evidence or an explicit user decision; a broad statement such as "preserve adjacent behavior" is not a substitute for classifying each candidate surface.`
+- [x] Run the task pins (Step 1.4 block, generic-ack meta-rule, template trailer line, ledger inventory) in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `skills: plans decision-points confirmation block, template trailer, ledger inventory`
 
 ### Task 4: grilling lifecycle-verb and generic-ack triggers
 
 Files:
 - `agents/skills/grilling/SKILL.md`
 
-- [ ] Append after the Mandatory ambiguity triggers paragraph:
+- [x] Append after the Mandatory ambiguity triggers paragraph:
 
 ```markdown
 **Lifecycle-verb clarification trigger:** when a user says skip, leave, drop, defer, preserve, or otherwise uses a lifecycle verb whose effect on the current tree is unclear, restate the candidate interpretations as concrete tree actions (for example: remove it from the current change now, defer it to a later change, or leave it in place untouched) and ask which applies; record the answer before treating the candidate as settled.
@@ -180,39 +180,39 @@ Files:
 **No generic acknowledgement confirms a material choice:** a reply such as sure, ok, or confirmed confirms only the material decisions explicitly named in the question or confirmation block; a decision about one adjacent concern is never generalized to another unlisted concern.
 ```
 
-- [ ] Run the two grilling pins in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `skills: grilling lifecycle-verb and generic-ack triggers`
+- [x] Run the two grilling pins in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `skills: grilling lifecycle-verb and generic-ack triggers`
 
 ### Task 5: grill-with-docs receipt cross-reference
 
 Files:
 - `agents/skills/grill-with-docs/SKILL.md`
 
-- [ ] Append one sentence to the plans Integration Point paragraph (the one beginning `` `plans` Phase 1 invokes this skill through its confidence gate ``): `When the interview resolves a plans confidence-gate decision point, record the answer as a one-line receipt (decision, source, date) in the requirements buffer's Decision points requiring a grill subsection during the interview, not after it.`
-- [ ] Run the grill-with-docs pin in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `skills: grill-with-docs decision-point receipts cross-ref`
+- [x] Append one sentence to the plans Integration Point paragraph (the one beginning `` `plans` Phase 1 invokes this skill through its confidence gate ``): `When the interview resolves a plans confidence-gate decision point, record the answer as a one-line receipt (decision, source, date) in the requirements buffer's Decision points requiring a grill subsection during the interview, not after it.`
+- [x] Run the grill-with-docs pin in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `skills: grill-with-docs decision-point receipts cross-ref`
 
 ### Task 6: review-plan unresolved decision-point audit
 
 Files:
 - `agents/skills/review-plan/SKILL.md`
 
-- [ ] In Step 1 (Load Plan and Context), append item 7:
+- [x] In Step 1 (Load Plan and Context), append item 7:
 
 ```markdown
 7. **Unresolved decision-point audit**: flag for the correctness-completeness worker: (a) plan tasks that implement one of multiple plausible designs where the plan records neither a decision-point receipt nor a `none remain` grill result; (b) a cleanup plan lacking a scope ledger or a grill result while material ownership, preservation, or history-strategy choices remain open; (c) a material candidate appearing in the branch diff or task scope with no keep/remove/defer disposition and no evidence or explicit-confirmation basis; a generic `user confirmed` or `behavior unchanged` phrase is not a basis. Each hit is a correctness-completeness finding.
 ```
 
-- [ ] In the Integration Point subsection "With the plan readiness gate (scripts/plan_readiness.py)", append: `The gate additionally requires the plan's decision-points trailer for plans whose latest review round is dated on or after 2026-09-08; treat a missing or unresolved trailer in such a plan as a blocking documentation finding.`
-- [ ] Run the two review-plan pins in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `skills: review-plan unresolved decision-point audit`
+- [x] In the Integration Point subsection "With the plan readiness gate (scripts/plan_readiness.py)", append: `The gate additionally requires the plan's decision-points trailer for plans whose latest review round is dated on or after 2026-09-08; treat a missing or unresolved trailer in such a plan as a blocking documentation finding.`
+- [x] Run the two review-plan pins in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `skills: review-plan unresolved decision-point audit`
 
 ### Task 7: plan_readiness decision-points trailer gate (RED first)
 
 Files:
 - `scripts/plan_readiness.py`
 
-- [ ] RED: add module constants after `VERDICT_TOKEN_RE`:
+- [x] RED: add module constants after `VERDICT_TOKEN_RE`:
 
 ```python
 # Plans reviewed on or after this date must carry the decision-points trailer
@@ -230,8 +230,8 @@ DECISION_MARKER_RE = re.compile(
 )
 ```
 
-- [ ] RED-adjacent fixture support (same commit): in `write_clean_state`, emit the round date into the sidecar by adding `sidecar["date"] = date` next to the existing sidecar assembly. Today `_clear_sidecar` emits no `date` key and the `date=` kwarg feeds only the plan and review filenames, so the fixtures could never exercise the date keying (r1 F1). No pre-existing check asserts the sidecar lacks a date.
-- [ ] RED: add the predicate next to `summary_section` (r3 F1: the trailer search is scoped to the `## Assumptions` section so a later quoted template line elsewhere in the plan can never satisfy or mask the gate; a plan with no `## Assumptions` heading falls back to the whole document and fails as missing for gated plans, which is correct because the template always renders the section):
+- [x] RED-adjacent fixture support (same commit): in `write_clean_state`, emit the round date into the sidecar by adding `sidecar["date"] = date` next to the existing sidecar assembly. Today `_clear_sidecar` emits no `date` key and the `date=` kwarg feeds only the plan and review filenames, so the fixtures could never exercise the date keying (r1 F1). No pre-existing check asserts the sidecar lacks a date.
+- [x] RED: add the predicate next to `summary_section` (r3 F1: the trailer search is scoped to the `## Assumptions` section so a later quoted template line elsewhere in the plan can never satisfy or mask the gate; a plan with no `## Assumptions` heading falls back to the whole document and fails as missing for gated plans, which is correct because the template always renders the section):
 
 ```python
 def assumptions_section(plan_text: str) -> str:
@@ -269,7 +269,7 @@ def decision_marker_problem(plan_text: str) -> str | None:
     return None
 ```
 
-- [ ] RED: add the selftest family and register it in the `run_selftest` dispatcher alongside the existing families:
+- [x] RED: add the selftest family and register it in the `run_selftest` dispatcher alongside the existing families:
 
 ```python
 def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None:
@@ -415,8 +415,8 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
     _clean_reviews_dir(reviews_dir)
 ```
 
-- [ ] Run `python3 scripts/plan_readiness.py --selftest`; expect RED with exactly this empirically derived failing set (r1 F2): `selftest#decision_marker/gated_missing_trailer_fails`, `selftest#decision_marker/gated_placeholder_trailer_fails`, `selftest#decision_marker/trailer_outside_assumptions_fails`, and `selftest#decision_marker/ambiguous_two_trailer_lines_fails` fail, while the four pass-expecting arms (`gated_none_remain_passes`, `gated_receipt_passes`, `legacy_missing_trailer_passes`, `sidecar_date_missing_exempt`) pass vacuously because the gate does not consume the trailer yet; every pre-existing check still passes.
-- [ ] GREEN: in `evaluate_readiness`, after the `is_review_ready` condition and before `return True, None`, insert:
+- [x] Run `python3 scripts/plan_readiness.py --selftest`; expect RED with exactly this empirically derived failing set (r1 F2): `selftest#decision_marker/gated_missing_trailer_fails`, `selftest#decision_marker/gated_placeholder_trailer_fails`, `selftest#decision_marker/trailer_outside_assumptions_fails`, and `selftest#decision_marker/ambiguous_two_trailer_lines_fails` fail, while the four pass-expecting arms (`gated_none_remain_passes`, `gated_receipt_passes`, `legacy_missing_trailer_passes`, `sidecar_date_missing_exempt`) pass vacuously because the gate does not consume the trailer yet; every pre-existing check still passes.
+- [x] GREEN: in `evaluate_readiness`, after the `is_review_ready` condition and before `return True, None`, insert:
 
 ```python
     # 6. Decision-points trailer (forward-looking): plans whose LATEST round
@@ -441,15 +441,15 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             )
 ```
 
-- [ ] Run `python3 scripts/plan_readiness.py --selftest`; expect GREEN: all checks pass including the eight new ones. Then run `python3 scripts/validate_review_staging.py --selftest`; expect GREEN (sibling untouched).
-- [ ] Run the two readiness pins (constant, named reason) in fail-closed form; expect GREEN.
-- [ ] Commit (only the file listed above): `scripts: plan_readiness decision-points trailer gate with selftest family`
+- [x] Run `python3 scripts/plan_readiness.py --selftest`; expect GREEN: all checks pass including the eight new ones. Then run `python3 scripts/validate_review_staging.py --selftest`; expect GREEN (sibling untouched).
+- [x] Run the two readiness pins (constant, named reason) in fail-closed form; expect GREEN.
+- [x] Commit (only the file listed above): `scripts: plan_readiness decision-points trailer gate with selftest family`
 
 ### Task 8: final validation and scope-integrity gate
 
 Files: none new (validation only; fixes commit to the owning file)
 
-- [ ] Run the full Validation Commands block from a clean shell at the repo root; expect exit 0 end to end.
-- [ ] Verify scope integrity of this plan's own commits: with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` must equal the union of the task Files lists; any extra path in this plan's commit history is a defect to fix before completion.
-- [ ] Verify no concurrent peer state was consumed: the commit half is proven by the scope-integrity check above; the working-tree half is proven by never staging, committing, checkout-reverting, or otherwise touching any path this plan never declares. The peer committing or reworking its own files mid-execution is expected and harmless; the invariant binds only this plan's actions.
-- [ ] Commit any validation-driven fixes individually to their owning files; expect none needed.
+- [x] Run the full Validation Commands block from a clean shell at the repo root; expect exit 0 end to end.
+- [x] Verify scope integrity of this plan's own commits: with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` must equal the union of the task Files lists; any extra path in this plan's commit history is a defect to fix before completion.
+- [x] Verify no concurrent peer state was consumed: the commit half is proven by the scope-integrity check above; the working-tree half is proven by never staging, committing, checkout-reverting, or otherwise touching any path this plan never declares. The peer committing or reworking its own files mid-execution is expected and harmless; the invariant binds only this plan's actions.
+- [x] Commit any validation-driven fixes individually to their owning files; expect none needed.
