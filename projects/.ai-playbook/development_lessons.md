@@ -5665,3 +5665,15 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** across one execute-plan review loop, present-tense RED-era comments in two test arms were still asserting the pre-fix behavior after the fix committed, and later rounds also caught comment predicates and plan-tense drift of the same shape; each required a follow-up comment-only fix commit that a same-change re-tense sweep would have prevented.
 
 **See also:** #62 (re-read RED test assertions against revised design invariants before GREEN; same lifecycle, assertions instead of comments).
+
+## 303. Sweep every path anchor when re-opening an archived artifact's validation block
+
+**Principle:** Family H (verify the real thing, not the abstraction) - an embedded validation block is executable text wired to concrete paths; any path anchor not re-verified at edit time is a latent break, and a forbidden-match guard converts a missing file into a silent pass.
+
+**Trigger:** a successor task amends the Validation Commands block of an executed, archived plan (or any completed document with an embedded check block) that greps sibling artifacts by path; some of those siblings may themselves have archived or moved since the block was certified.
+
+**Rule:** (1) Before adding pins to such a block, execute every path assignment and grep in the block against the current tree; a pin on a missing file is vacuous (positive pins abort, forbidden-match guards read the file error as "no match"). (2) Repoint every stale anchor the sweep finds, not only the variable the new pin sits beside - including the block's self-extraction/self-reference paths. (3) Record the archival that moved the targets beside the repointed line so a later reader does not read the repoint as a fold of the certified wording.
+
+**Why:** while adding a fold-5 pin to an archived plan's validation block, the review caught that the block's `PL_DOC` and its self-extraction `PLAN_FILE` still pointed at pre-archive paths of two sibling plans archived in an intervening execution; the planned edit pinned only `PL_DOC`, and the block would have aborted on `awk` (exit 2) while the plan claimed an end-to-end green. The blocking round-one finding was exactly the un-swept sibling anchor.
+
+**See also:** #72 (verify plan-time claims against actual source before depending on them - the general anchor-verification rule this specializes).

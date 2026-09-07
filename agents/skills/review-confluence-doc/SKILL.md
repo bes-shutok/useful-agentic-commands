@@ -123,7 +123,7 @@ Before flagging a contradiction between the reviewed page and a local or linked 
 
 #### 4.4.1 Duplicated normative prose (SOT consolidation)
 
-- When the same normative workflow or contract rule appears in several sections or child pages, stage one consolidation finding per the Living-doc gates: name the canonical owner and replace peer copies with audience-specific pointers or deltas.
+- When the same normative workflow or contract rule appears in several sections or child pages, stage one consolidation finding per `review-agents/documentation.md` Living-doc gates.
 - Full lens gates: `review-agents/documentation.md` (Living-doc gates: authority roles, wire SOT, consolidation finding shape).
 
 #### 4.5 Completeness (light check)

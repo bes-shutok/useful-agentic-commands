@@ -26,7 +26,7 @@ One duplicated sentence, one pointer, one plan.
 
 **Before (today).** A `review-confluence-doc` reviewer reaches section 4.4.1 ("Duplicated normative prose (SOT consolidation)") and reads bullet 1: it tells them to stage one consolidation finding per the Living-doc gates and then restates the remedy inline ("name the canonical owner and replace peer copies with audience-specific pointers or deltas"). That restated clause mirrors, nearly word for word, the closing clause of the "Consolidation finding shape" check in `agents/skills/review-agents/documentation.md` ("names the proposed canonical owner from the documentation hierarchy and replaces peer copies with audience-specific pointers or deltas"). The copies differ only by the replace/replaces inflection, so a future reword of the canonical sentence silently diverges from the consumer copy. The item is a regenerating defect: it was found and deferred in the sot-unification plan's code review rounds r1 through r3 (as F5/F7, then F2, then F3), because fixing it inside that plan would have re-pinned a validation span in a plan about to be archived. The asymmetry that made the drift dangerous: only the consumer copy was pinned vocabulary; the canonical sentence in `documentation.md` had no pin at all.
 
-**After (this plan).** The same reviewer reads a bullet that keeps the trigger and the action and ends at a file-qualified pointer: "When the same normative workflow or contract rule appears in several sections or child pages, stage one consolidation finding per `review-agents/documentation.md` Living-doc gates." The remedy wording now exists exactly once across the two skills, in the canonical home. Bullet 2 ("Full lens gates: `review-agents/documentation.md` (Living-doc gates: authority roles, wire SOT, consolidation finding shape)") is unchanged and keeps pointing at the complete gate set. The validation block in this plan re-pins both sides of the contract: the canonical remedy tail is pinned in `documentation.md` for the first time, the new pointer bullet and the retained bullet 2 are pinned in `review-confluence-doc`, and two negative sweeps prove the restated remedy is gone from `review-confluence-doc`.
+**After (this plan).** The same reviewer reads a bullet that keeps the trigger and the action and ends at a file-qualified pointer: "When the same normative workflow or contract rule appears in several sections or child pages, stage one consolidation finding per `review-agents/documentation.md` Living-doc gates." The remedy wording now exists exactly once across the two skills, in the canonical home. Bullet 2 ("Full lens gates: `review-agents/documentation.md` (Living-doc gates: authority roles, wire SOT, consolidation finding shape)") is unchanged and keeps pointing at the complete gate set. The validation block in this plan re-pins both sides of the contract: the canonical remedy tail is pinned in `documentation.md` for the first time, the new pointer bullet and the retained bullet-2 pointer are pinned in `review-confluence-doc`, and two negative sweeps prove the restated remedy is gone from `review-confluence-doc`.
 
 **Why no other file changes.** `review-panel-selection.md` already carries a pointer-style sentence ("the living-doc patterns are canonically defined in `documentation.md` Living-doc gates"), so the fan-out rule needs nothing. `documentation.md` already holds the canonical phrasing; editing it would churn a sentence the fix is trying to stabilize. The archived origin plan is history and stays untouched.
 
@@ -114,17 +114,17 @@ Authoring-time RED-today proof (executed 2026-09-05 against the pre-task tree): 
 Files:
 - `agents/skills/review-confluence-doc/SKILL.md`
 
-- [ ] In section "#### 4.4.1 Duplicated normative prose (SOT consolidation)", replace bullet 1 (the single-line bullet beginning `When the same normative workflow or contract rule appears in several sections or child pages`) verbatim with:
+- [x] In section "#### 4.4.1 Duplicated normative prose (SOT consolidation)", replace bullet 1 (the single-line bullet beginning `When the same normative workflow or contract rule appears in several sections or child pages`) verbatim with:
 
 ```
 - When the same normative workflow or contract rule appears in several sections or child pages, stage one consolidation finding per `review-agents/documentation.md` Living-doc gates.
 ```
 
-- [ ] Leave bullet 2 (`Full lens gates: `review-agents/documentation.md` (Living-doc gates: authority roles, wire SOT, consolidation finding shape)`) and every other line of the file unchanged
-- [ ] Run the Validation Commands block from the repo root → expect GREEN: both consumer pins match exactly once, the canonical pin matches exactly once, both negative sweeps report zero occurrences, exit code 0
-- [ ] Run the repo's public hygiene scan from the repo root: `bash ~/.ai-playbook/scripts/scan-public-hygiene.sh` → expect exit code 0 (mandated before committing skill or instruction changes)
-- [ ] Commit: `skills: dedupe review-confluence-doc 4.4.1 remedy tail into documentation.md`
+- [x] Leave bullet 2 (`Full lens gates: `review-agents/documentation.md` (Living-doc gates: authority roles, wire SOT, consolidation finding shape)`) and every other line of the file unchanged
+- [x] Run the Validation Commands block from the repo root → expect GREEN: both consumer pins match exactly once, the canonical pin matches exactly once, both negative sweeps report zero occurrences, exit code 0
+- [x] Run the repo's public hygiene scan from the repo root: `bash ~/.ai-playbook/scripts/scan-public-hygiene.sh` → expect exit code 0 (mandated before committing skill or instruction changes)
+- [x] Commit: `skills: dedupe review-confluence-doc 4.4.1 remedy tail into documentation.md`
 
 ### Task 2: Final validation
 
-- [ ] Run the full Validation Commands block from the repo root against the post-task tree → expect exit code 0 (no commit; validation only)
+- [x] Run the full Validation Commands block from the repo root against the post-task tree → expect exit code 0 (no commit; validation only)

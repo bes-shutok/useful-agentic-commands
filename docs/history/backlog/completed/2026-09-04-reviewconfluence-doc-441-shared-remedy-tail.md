@@ -1,6 +1,6 @@
 # Backlog: shared remedy tail between review-confluence-doc 4.4.1 and documentation.md consolidation shape
 
-Status: open
+Status: done
 Workflow: backlog
 Source: 2026-09-04-sot-unification-living-docs-and-grill-escalation branch, code review r3 finding F3 (regenerated at r1 as F5/F7, r2 as F2)
 Severity: Low (future-reword divergence risk only)

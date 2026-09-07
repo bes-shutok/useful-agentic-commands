@@ -24,6 +24,8 @@ The source material could establish facts about those items, but it did not sele
 
 The same failure pattern also applies to non-cleanup plans. A feature specification can describe the goal and constraints while leaving multiple reasonable implementation boundaries, ownership choices, compatibility modes, error policies, or rollout shapes open. Detailed sources do not make an unselected choice high-confidence.
 
+A related communication ambiguity made the failure easier to miss: an instruction such as "skip that extra code" can mean remove it from the current change, defer it to another change, or leave it in place but stop extending it. The agent must not choose among those meanings from context alone. A broad confirmation such as "sure" also cannot confirm a material scope decision that was not named explicitly in the confirmation block. A decision about one adjacent concern must not be generalized to another unlisted concern.
+
 ## Root cause
 
 The workflow collapsed two different activities:
@@ -35,6 +37,8 @@ The phrase "strongly supported by repo evidence" was interpreted as "the sources
 
 Cleanup wording was an additional missed trigger. Requests containing remove, revert, restore, clean up, or match-the-base language need a preservation boundary even when the candidate change looks obvious. The agent must distinguish feature-owned changes from pre-existing or unrelated changes before any restore operation.
 
+The communication layer has the same fail-open risk. The agent treated an underspecified action verb as if its lifecycle meaning were settled, then treated a generic acknowledgement as confirmation of a material decision that had not been surfaced as a separate candidate. The missing step was to restate the interpretation in concrete lifecycle terms and obtain confirmation before carrying it into the plan.
+
 ## Generalized lesson
 
 **Principle:** Process-only; facts do not resolve design ambiguity.
@@ -44,6 +48,10 @@ Cleanup wording was an additional missed trigger. Requests containing remove, re
 **Rule:** Source verification resolves facts, not unselected design trade-offs. If competing plan shapes remain and choosing one would materially change the task list or its safety boundary, classify the point as low-confidence and invoke `grill-with-docs` before requirements confirmation or plan-file writing.
 
 **Cleanup rule:** For remove, revert, restore, clean-up, or match-the-base requests, ask the focused scope question before any restore or deletion operation whenever the branch contains more than the obvious feature work or the worktree contains pre-existing changes. The question must establish the task-owned files, frozen files, ignored/untracked preservation, allowed deletion, and history strategy.
+
+**Ambiguous-action rule:** When a user says to skip, leave, drop, defer, preserve, or otherwise uses a lifecycle verb whose effect on the current tree is unclear, restate the candidate interpretations as concrete actions (for example, remove now, defer to a later change, or leave untouched) and ask which one applies. Never treat a generic acknowledgement as confirmation of a material scope choice that was not named in the confirmation block.
+
+**Change-inventory rule:** For cleanup or scope-reduction plans, enumerate every non-obvious branch-only change or affected cross-cutting surface and record its disposition as keep, remove, or defer. Each disposition needs either direct source evidence or an explicit user decision. A broad statement such as "preserve adjacent behavior" is not a substitute for classifying each candidate surface.
 
 **Why:** A specification can define the goal while intentionally leaving implementation boundaries, ownership, compatibility, and rollout decisions open. A branch can contain valid feature work beside unrelated or pre-existing changes. Recording one option as a high-confidence assumption hides the decision from the user and can cause the executor to delete, rewrite, or preserve the wrong material.
 
@@ -67,7 +75,11 @@ Update the plans and grilling workflows with the following safeguards:
    - an explicit user decision suppresses only the already-resolved question, not unrelated ambiguity.
 8. Teach `review-plan` to flag a plan when its tasks implement one of multiple plausible designs, or when a cleanup plan lacks a scope ledger and grill result.
 9. Add a structural readiness check that refuses plan finalization when a material ambiguity is identified but the plan has neither a recorded user decision nor a `none remain` grill result.
-10. Keep the backlog and regression fixtures generic. Do not copy ticket IDs, repository names, service names, internal URLs, secret names, user identities, absolute paths, or feature-specific payloads into this process item.
+10. Add a lifecycle-verb clarification check to the grilling workflow: when an action word can mean remove, defer, or leave untouched, require the restated interpretation and the user's answer to be recorded before the plan treats the candidate as settled.
+11. Add a cleanup change-inventory section to the requirements buffer and plan scope ledger. It must enumerate non-obvious branch-only files, interfaces, headers, configuration, and documentation surfaces, with keep/remove/defer disposition and a source or user-decision basis for each.
+12. Make `review-plan` and plan readiness reject a material candidate that appears in the branch diff or task scope but has no disposition and confirmation/evidence basis. A generic "user confirmed" or "behavior unchanged" phrase is insufficient.
+13. Add regression fixtures for ambiguous lifecycle verbs, generic acknowledgements, and a decision that resolves one candidate while leaving an adjacent unlisted candidate unresolved.
+14. Keep the backlog and regression fixtures generic. Do not copy ticket IDs, repository names, service names, internal URLs, secret names, user identities, absolute paths, or feature-specific payloads into this process item.
 
 ## Acceptance criteria
 
@@ -77,7 +89,10 @@ Update the plans and grilling workflows with the following safeguards:
 - Cleanup and restoration requests use a scope question and a cleanup scope ledger before any restore or deletion operation.
 - Step 1.4 visibly reports the decision-point result, including `none remain` when no grill is needed.
 - The cleanup-scope baseline checker is named as the mechanical guard for dirty, untracked, and authorized-deletion boundaries.
+- Cleanup plans classify every non-obvious branch-only change as keep, remove, or defer with evidence or an explicit decision receipt.
+- Ambiguous lifecycle verbs are restated as concrete tree actions and confirmed before they become plan assumptions.
 - Regression fixtures prove that authoritative source documents do not suppress grilling when they leave multiple viable designs.
+- Regression fixtures prove that generic acknowledgements do not confirm an unlisted material scope decision.
 - Review-plan can detect a missing grill result or cleanup ledger when the plan contains a material unresolved choice.
 - The existing explicit-scope-extension rule remains intact and is cross-referenced rather than duplicated.
 - This backlog entry contains only generic workflow language and no project-specific or sensitive data.
