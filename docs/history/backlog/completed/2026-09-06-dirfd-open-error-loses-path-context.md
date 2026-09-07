@@ -1,6 +1,6 @@
 # dirfd-relative open loses full-path context in non-translated OSError diagnostics
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-2026-09-05-summarizer-round-3-residuals-code-review-r3.md, round r3, finding F1 (Low, non-blocking), correctness-completeness worker; deferred at orchestrator direction (plan-prescribed re-raise shape)
 

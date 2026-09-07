@@ -358,7 +358,7 @@ def read_private_file(path: Path) -> bytes:
                 raise PermissionsError(
                     f"refusing to follow symlink target: {path}"
                 ) from exc
-            raise
+            raise type(exc)(f"cannot read private file: {path}: {exc}") from exc
     # Re-assert mode on every run (fd-based, mirroring the directory
     # helpers): a legacy or restored file with a non-canonical mode is
     # reset on the read path, never via a path-string chmod. Advisory
@@ -547,10 +547,41 @@ def _ingest_sidecars(directory: Path, found: set[Path]) -> None:
 
 
 def read_byte_buffer(path: Path) -> bytes:
-    """Read ``path`` ONCE into an immutable byte buffer (digest+parse source)."""
+    """Read ``path`` ONCE into an immutable byte buffer (digest+parse source).
+
+    Kernel-grade like ``read_private_file``: the parent directory is
+    pinned with an ``O_DIRECTORY | O_NOFOLLOW`` dirfd (via
+    ``_pinned_parent``) and the final component is opened dirfd-relative
+    with ``O_NOFOLLOW``, so a symlink swapped onto the parent cannot
+    redirect the read and a symlink swapped onto the file itself fails
+    the open (ELOOP/ENOTDIR) instead of being followed. The read is pure: no mode re-tightening on the
+    read path (unlike ``read_private_file``, which resets to 0600);
+    sidecar modes are managed at write time. Inherits
+    ``_pinned_parent``'s intermediate-ancestor residual contract.
+    """
     _reject_symlink(path)
-    with open(str(path), "rb") as fh:
-        return fh.read()
+    with _pinned_parent(
+        path.parent, f"refusing symlinked parent: {path.parent}"
+    ) as parent_fd:
+        try:
+            fd = os.open(
+                path.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                dir_fd=parent_fd,
+            )
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                raise PermissionsError(
+                    f"refusing to follow symlink target: {path}"
+                ) from exc
+            raise type(exc)(f"cannot read byte buffer: {path}: {exc}") from exc
+        try:
+            fh = os.fdopen(fd, "rb")
+        except BaseException:
+            os.close(fd)
+            raise
+        with fh:
+            return fh.read()
 
 
 def sha256_hex(data: bytes) -> str:
@@ -2166,6 +2197,7 @@ def publish_with_recheck(
     publish_fn: Callable[[], None],
     *,
     retries: int = MAX_PUBLISH_RETRIES,
+    attempt_observer: Callable[[dict[Path, bytes]], None] | None = None,
 ) -> int:
     """Recheck each input's on-disk generation against the buffer before publish.
 
@@ -2197,6 +2229,16 @@ def publish_with_recheck(
     selftest fixture modeled on the ``strict_audit_stale_snapshot`` family;
     this gate cannot observe what ``publish_fn`` serialized.
 
+    ``attempt_observer`` is informational only: invoked after each in-place
+    buffer refresh with a snapshot (shallow copy) of the refreshed buffers,
+    it lets a caller track per-attempt parse state that the single final
+    ``publish_fn`` invocation cannot observe (as ``cmd_strict_audit`` does
+    for window-aware chronicity). Residual: transient parse states that
+    keep the byte size equal and are visible only to a recheck digest read
+    (repair and re-break of equal-size content between two refreshes) are
+    unobservable at the refresh site; this accepted residual is analogous
+    to ``_pinned_parent``'s documented intermediate-ancestor residual.
+
     Returns the attempt count: ``1`` when the first recheck passed (no
     retry), ``N+1`` after ``N`` absorbed retries. Callers use this signal
     to detect a retry-absorbed mutation and recompute ledger-derived state
@@ -2227,6 +2269,10 @@ def publish_with_recheck(
         # Re-read buffers and retry.
         for path in list(buffers.keys()):
             buffers[path] = read_byte_buffer(path)
+        if attempt_observer is not None:
+            # Shallow copy: the observer must not mutate the live buffers
+            # the recheck loop depends on.
+            attempt_observer(dict(buffers))
 
 
 # --------------------------------------------------------------------------- #
@@ -2419,22 +2465,52 @@ def cmd_strict_audit(
                     classified.append(("growth", payload))
             return classified, unparseable
 
+        # Window-aware chronicity: a sidecar is chronic only when both
+        # conditions hold: it is ledger-unreadable AND it was never
+        # parseable at any observed point of the retry window (each
+        # refresh snapshot plus the final-attempt state unioned inside
+        # ``_publish``). A chronic sidecar repaired and re-broken inside
+        # the window is retry-induced. Exit code, published report, and
+        # ledger stay unaffected (plan 2026-09-06 item 3 design
+        # invariant).
+        ever_parseable: set[Path] = set()
+
+        def _parseable(bufs: dict) -> set:
+            # Single definition of "parseable at an observed point" (review
+            # r1 F4): both the attempt observer and the publish gate's
+            # final-attempt union compute the predicate here, so the
+            # chronicity rule cannot drift between two idioms.
+            return {
+                p
+                for p, buf in bufs.items()
+                if parse_payload(buf)[0] is not None
+            }
+
+        def _observe_attempt(refreshed: dict[Path, bytes]) -> None:
+            ever_parseable.update(_parseable(refreshed))
+
         def _publish() -> None:
             classified, unparseable_now = _classify_current()
             report = build_effectiveness_report(classified)
             # Operability pointer: surface the malformed-skip count from the
             # rebuilt report and the retry-induced unparseable drop delta on
             # stderr; paths stay private (not emitted). Set semantics: a
-            # sidecar unparseable at publish time counts only when it was
-            # NOT chronically unreadable at the initial classification (a
-            # member of ledger["unreadable"]). The earlier count
+            # sidecar unparseable at publish is excluded from the
+            # retry-delta only when it is ledger-unreadable AND never
+            # parseable at any observed point of the window
+            # (``ever_parseable``, which unions every refresh snapshot
+            # the ``attempt_observer`` saw plus this final-attempt
+            # parseable subset); a ledger-parseable sidecar broken
+            # during the window counts as a fresh drop regardless of
+            # ``ever_parseable`` membership. The earlier count
             # subtraction masked the repaired-chronic-plus-fresh-drop
             # window (backlog origin item 3): a repaired chronic sidecar
             # and a fresh drop cancel out numerically while the set
             # difference still catches the fresh drop. Chronic sidecars
             # stay visible via the ledger-pinned classes= summary.
             skipped = report.get("availability", {}).get("skipped_malformed", 0)
-            chronic = set(ledger["unreadable"])
+            ever_parseable.update(_parseable(buffers))
+            chronic = set(ledger["unreadable"]) - ever_parseable
             retry_drops = unparseable_now - chronic
             delta = len(retry_drops)
             if skipped or retry_drops:
@@ -2463,7 +2539,9 @@ def cmd_strict_audit(
             if markdown_report is not None:
                 _atomic_write_private(markdown_report, markdown_bytes)
 
-        attempts = publish_with_recheck(buffers, _publish)
+        attempts = publish_with_recheck(
+            buffers, _publish, attempt_observer=_observe_attempt
+        )
 
         # Retry-absorbed mutation: ``replaced`` and ``audit`` above were
         # computed from the pre-race buffers while the published report was
@@ -3323,6 +3401,70 @@ def _t_private_permissions(check) -> None:
             _names_parent_only(msg),
         )
 
+        # Non-symlink final-component open-failure arm (plan 2026-09-06,
+        # item 1): the dirfd-relative final-component open surfaces only the
+        # bare file name in the OSError message, losing the directory
+        # context. Given an existing real directory (tel) and a missing
+        # child, the captured message must contain the full path string.
+        # RED before Task 2: the message used to read "[Errno 2] No such
+        # file or directory: 'absent.json'" with no directory context;
+        # the re-raise now names the full path. Same msg-capture idiom as
+        # the missing-parent arm above; capturing (PermissionsError,
+        # OSError) keeps any failure contained. The exception object is
+        # kept (review r1 F2): the plan's diagnostics criterion promises
+        # both the full path AND chaining via ``from exc``, so the arm
+        # also pins the OSError subclass name and the original OSError as
+        # ``__cause__``; the reconstructed exception does not carry
+        # errno/filename attributes (plan Task 2 note).
+        caught = None
+        try:
+            read_private_file(tel / "absent.json")
+        except (PermissionsError, OSError) as exc:
+            caught = exc
+        msg = None if caught is None else str(caught)
+        check(
+            "permissions: read_private_file non-symlink open failure names "
+            "the full path",
+            msg is not None and str(tel / "absent.json") in msg,
+        )
+        check(
+            "permissions: read_private_file open failure preserves the "
+            "OSError subclass and chains the original OSError",
+            caught is not None
+            and type(caught) is type(caught.__cause__),
+        )
+
+        # read_byte_buffer non-symlink open-failure arm (review r1 F1):
+        # sibling of the read_private_file arm above for the strict
+        # audit's sidecar reader. Given the same existing real directory
+        # (tel) and a missing child, the translated message must name the
+        # full path ("cannot read byte buffer: <path>: ..."). Same
+        # msg-capture idiom; capturing (PermissionsError, OSError) keeps
+        # any failure contained. The exception object is kept (review r2
+        # F2): like the read_private_file sibling above, the arm also
+        # pins the OSError subclass name and the original OSError as
+        # ``__cause__`` via the exact type relationship (review r2
+        # F1 idiom); the reconstructed exception does not carry
+        # errno/filename attributes (plan Task 2 note).
+        caught_b = None
+        try:
+            read_byte_buffer(tel / "absent-buffer.json")
+        except (PermissionsError, OSError) as exc:
+            caught_b = exc
+        buf_msg = None if caught_b is None else str(caught_b)
+        check(
+            "permissions: read_byte_buffer non-symlink open failure names "
+            "the full path",
+            buf_msg is not None
+            and str(tel / "absent-buffer.json") in buf_msg,
+        )
+        check(
+            "permissions: read_byte_buffer open failure preserves the "
+            "OSError subclass and chains the original OSError",
+            caught_b is not None
+            and type(caught_b) is type(caught_b.__cause__),
+        )
+
         # Pre-check-bypass arms (review r1 F2): with _reject_symlink patched
         # to a no-op, the kernel flags (O_NOFOLLOW / O_DIRECTORY dirfd) are
         # the only guard left, so these arms pin the kernel mechanism the
@@ -3429,6 +3571,41 @@ def _t_private_permissions(check) -> None:
                 _expect_refusal(
                     lambda: read_private_file(anc_link / "target.json"),
                     f"refusing symlinked parent: {anc_link}",
+                ),
+            )
+
+            # read_byte_buffer symlinked ANCESTOR (plan 2026-09-06, item 2):
+            # RED before Task 2: the reader the strict audit uses for
+            # sidecar content used to open the full path string with only
+            # the target pre-check, so with the pre-check disabled it
+            # FOLLOWED a symlinked ancestor directory and returned the
+            # bytes; the pinned-parent rerouting now kernel-refuses it.
+            # Reuses the anc_real / anc_link fixtures of the sibling arm
+            # above (anc_link -> real ancestor dir containing target.json);
+            # refusal message mirrors the read_private_file ancestor
+            # contract exactly.
+            check(
+                "permissions: read_byte_buffer kernel-refuses symlinked "
+                "ancestor with pre-check disabled",
+                _expect_refusal(
+                    lambda: read_byte_buffer(anc_link / "target.json"),
+                    f"refusing symlinked parent: {anc_link}",
+                ),
+            )
+
+            # read_byte_buffer symlinked FINAL component (review r1 F1):
+            # sibling of the read_private_file final-component bypass arm
+            # above, reusing its read_link fixture (symlink under the real
+            # tel directory pointing at the real read_target file); with
+            # the pre-check disabled the O_NOFOLLOW open fails
+            # (ELOOP/ENOTDIR) and the translation names the link with the
+            # target-refusal message.
+            check(
+                "permissions: read_byte_buffer kernel-refuses symlinked "
+                "target with pre-check disabled",
+                _expect_refusal(
+                    lambda: read_byte_buffer(read_link),
+                    f"refusing to follow symlink target: {read_link}",
                 ),
             )
 
@@ -4083,6 +4260,64 @@ def _stale_snapshot_inner(check) -> None:
             mask_rc == 1
             and "dropped 1 unparseable sidecar(s) (retry-induced)" in notes_line
             and "skipped" not in notes_line,
+        )
+
+        # Double-flip arm (plan 2026-09-06, item 3): a chronic sidecar
+        # repaired and then re-broken INSIDE one retry window ends
+        # unparseable (retry-induced final state) yet stays in the chronic
+        # snapshot set; before Task 3 the bare-snapshot chronic set kept
+        # the note silent, and Task 3's window-aware chronicity
+        # reclassifies it as retry-induced. This
+        # fixture shape is exactly the executed probe
+        # (docs/tmp/probe-chronic-reabsorption.py, run 2026-09-06: rc 0,
+        # five sc_b reads, stderr empty). sc_b is written unparseable
+        # BEFORE cmd_init_baseline (chronic); inside ONE cmd_strict_audit
+        # run a first-call publish_with_recheck hook repairs sc_b to a
+        # distinct valid payload, and a read_byte_buffer patch with a read
+        # counter (realpath-matched to sc_b: the macOS tempdir /var ->
+        # /private/var symlink would break a plain Path equality) re-breaks
+        # sc_b just before its THIRD read (read 1: initial buffer; read 2:
+        # re-read after the repair-triggered retry; read 3: the next
+        # attempt's recheck digest read). Final bytes equal the baseline
+        # snapshot, so rc stays 0 (exit-code invariant pinned); the read
+        # counter pins the observed five-read retry sequence (reads 4-5:
+        # the closing refresh + recheck) so a future recheck-loop refactor
+        # fails diagnosably instead of silently.
+        _write_private_sidecar(sc, _make_current_payload(["quality"]))
+        sc_b.write_bytes(b"{ not json")  # chronic: unparseable before init
+        bp.unlink()
+        rc_init_double_flip = cmd_init_baseline(facts, bp, tel)
+        check(
+            "strict_audit_stale_snapshot: re-init before double-flip arm succeeds",
+            rc_init_double_flip == 0 and bp.is_file(),
+        )
+        double_flip_repair = _make_current_payload(["risk"])
+        double_flip_repair["counts"]["raw_findings"] = 8  # distinct payload
+        orig_rbb = read_byte_buffer
+        sc_b_reads = {"n": 0}
+        sc_b_real = Path(os.path.realpath(sc_b))
+
+        def _rebreak_sc_b_before_third_read(path, *rbb_args, **rbb_kwargs):
+            if Path(os.path.realpath(path)) == sc_b_real:
+                sc_b_reads["n"] += 1
+                if sc_b_reads["n"] == 3:
+                    sc_b.write_bytes(b"{ not json")
+            return orig_rbb(path, *rbb_args, **rbb_kwargs)
+
+        this_mod.read_byte_buffer = _rebreak_sc_b_before_third_read
+        try:
+            double_flip_rc, double_flip_err = _audit_with_hook(
+                {sc_b: double_flip_repair}
+            )
+        finally:
+            this_mod.read_byte_buffer = orig_rbb
+        check(
+            "strict_audit_stale_snapshot: re-broken chronic sidecar counts "
+            "as retry-induced",
+            double_flip_rc == 0
+            and sc_b_reads["n"] == 5
+            and "dropped 1 unparseable sidecar(s) (retry-induced)"
+            in double_flip_err,
         )
 
         # Silent-suppression arm (review r1 F6): the sidecar is mutated on

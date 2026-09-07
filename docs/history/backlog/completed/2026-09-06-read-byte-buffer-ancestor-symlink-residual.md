@@ -1,6 +1,6 @@
 # read_byte_buffer still opens sidecar content by full path string (ancestor-symlink residual)
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-2026-09-05-summarizer-round-3-residuals-code-review-r2.md, round r2, finding F4 (Low, non-blocking), risk worker; deferred at orchestrator direction (out-of-scope frozen path)
 

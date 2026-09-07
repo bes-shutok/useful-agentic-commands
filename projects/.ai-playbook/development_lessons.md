@@ -5653,3 +5653,15 @@ When the identical command behaves differently in the agent shell versus the use
 **Why:** a review of a token-usage telemetry script found the rollout-event adapter parsed an assumed envelope while real files nest the token counters two levels deeper, so the adapter was dead on production data while its selftests stayed green; the same pass found emitted records embedding the absolute home directory path in provenance fields.
 
 **See also:** #298 (execute the fragment against the real input it will run on), #299 (resolved-path containment guards and degenerate roots).
+
+## 302. RED-phase comments describing pre-fix behavior must be re-tensed when GREEN lands
+
+**Principle:** Family C (shared-artifact co-evolution: a comment narrating current behavior is a second artifact that goes stale the moment the code it describes changes).
+
+**Trigger:** TDD fixtures or inline comments written while a test is RED that describe the buggy pre-fix behavior in present tense ("this arm currently drops the full path", "Today the reader opens the raw string").
+
+**Rule:** (1) When authoring RED-phase comments, frame the bug narrative as anchored to the RED moment ("RED before <change>: <old behavior>") so the tense is explicitly historical. (2) In the same change that lands the fix, sweep the touched test files for those comments and re-tense or rewrite them to describe the post-fix contract; a present-tense claim about old behavior survives as a false statement about the new code. (3) Review must read fixture comments against the final code, not against the RED snapshot they were written against.
+
+**Why:** across one execute-plan review loop, present-tense RED-era comments in two test arms were still asserting the pre-fix behavior after the fix committed, and later rounds also caught comment predicates and plan-tense drift of the same shape; each required a follow-up comment-only fix commit that a same-change re-tense sweep would have prevented.
+
+**See also:** #62 (re-read RED test assertions against revised design invariants before GREEN; same lifecycle, assertions instead of comments).

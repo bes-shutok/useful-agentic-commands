@@ -1,6 +1,6 @@
 # Chronic re-absorption: repair-then-rebreak of the same sidecar stays note-silent
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-2026-09-05-summarizer-round-3-residuals-code-review-r2.md, round r2, finding F5 (Low, non-blocking), risk worker; deferred at orchestrator direction (accepted design limit)
 
