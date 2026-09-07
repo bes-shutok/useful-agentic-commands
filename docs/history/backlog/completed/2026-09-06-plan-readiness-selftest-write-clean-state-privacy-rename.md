@@ -1,6 +1,6 @@
 # Backlog: plan_readiness selftest `write_clean_state` privacy-underscore rename
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-plan-readiness-polish-code-review-r1.md (code review r1, finding F2, Low, non-blocking)
 Severity: Low
