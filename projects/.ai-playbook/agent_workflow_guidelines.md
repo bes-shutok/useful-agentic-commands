@@ -564,6 +564,8 @@ When implementing fixes for PR review comments, every change must belong to the 
 
 37.4. **PR thread replies are for the reviewer.** Do not put questions or decision prompts for your human partner in a GitHub review reply (for example "say if you want this cherry-picked onto …"). State the technical answer for the reviewer; keep partner-only options and follow-ups in the chat session.
 
+37.5. **PR thread replies state current behavior and current scope.** A reply implies a planned follow-up only when an authoritative project source records that plan; do not use roadmap language ("future", "planned", "will be added") on speculation. Name contract mechanisms by the repository's own term (for example, keep durable replay safety distinct from `Idempotency-Key` header semantics). The `receiving-review` skill's roadmap and terminology gates are the operational enforcement of this rule and point here rather than restating it.
+
 ## 38. Verify a Skill's Default Behavior Before Writing About It
 
 Before writing any documentation, PR description, or explanation that describes what a skill or tool does by default, read the skill's `SKILL.md` (or the tool's README) to confirm the default output mode, trigger conditions, and opt-in flags.

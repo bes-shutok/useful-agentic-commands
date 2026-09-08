@@ -1,6 +1,6 @@
 # Backlog: Harden passive review thread handling and contract terminology
 
-Status: backlog idea (pre-plan; promote via the `plans` skill when scheduled).
+Status: done (executed 2026-09-08 via docs/plans/2026-09-04-review-reply-verification-contract-terminology.md).
 Workflow: when implementation is scheduled, create a plan in `{plans_dir}` and move this file to `docs/history/backlog/completed/` when the work is complete.
 
 ## Problem

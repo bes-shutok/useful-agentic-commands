@@ -15,6 +15,8 @@ Backlog origin: `docs/history/backlog/2026-08-17-review-reply-verification-and-c
 - assume the mechanical before/after reply verification primitive lives in `github-pr-workflow` "Shared GitHub PR Operations" (its documented role as shared primitives owner), while the behavioral gates (terminology, roadmap, hygiene, architectural boundary, correction protocol) live in `receiving-review`; basis: both skills' routing boundaries.
 - assume no new test harness: validation is fail-closed grep probes over the edited skill files plus the repo hygiene scan; basis: backlog "Validation artifacts" note and the repo has no skill-content test suite.
 
+Decision points requiring a grill: none remain.
+
 ## Gist & Examples
 
 A passive review session posted a reply to the wrong thread, used ticket-scope language, called durable natural-key replay safety "idempotency" narrowly, and promised future `Idempotency-Key` support nobody had decided. The skills already contain most rules but nothing mechanical stops a wrong-thread reply or terminology drift.
@@ -164,19 +166,19 @@ Files:
 - `agents/skills/receiving-review/SKILL.md`
 - `agents/skills/github-pr-workflow/SKILL.md`
 
-- [ ] In `github-pr-workflow` "Shared GitHub PR Operations", add a `verify_thread_attachment` operation: input is the reply's GraphQL comment ID plus the intended parent thread ID; query the target thread by its `PRRT_` ID directly (a single-thread node query, not the `reviewThreads(first: 100)` inventory, so pagination cannot produce a false mismatch), locate the reply among the thread's comments, and fail loudly when the reply is not attached to the intended parent thread or the thread's parent comment author, file path, or line does not match the intended target (reply comments carry no path or line of their own; those attributes live on the parent comment). Reference it from the "Reply to review threads" guidelines as the mandatory post-reply check.
-- [ ] In `receiving-review` "Feedback-source Workflow", extend step 13 (the reply step) with the target-thread verification gate: resolve the PR and fetch the complete thread inventory; select the target by stable thread ID; verify the parent comment author, file path, line, and a distinctive body fragment; post through the source adapter; re-fetch the thread and verify that the new reply is attached to the intended parent.
-- [ ] State the failure semantics: if the pre-check mismatches or the post-check shows a mismatch, stop and report the state; do not attempt a second reply until the target is re-resolved from current API data.
-- [ ] Commit: `skills: add target-thread verification gate to receiving-review and github-pr-workflow`
+- [x] In `github-pr-workflow` "Shared GitHub PR Operations", add a `verify_thread_attachment` operation: input is the reply's GraphQL comment ID plus the intended parent thread ID; query the target thread by its `PRRT_` ID directly (a single-thread node query, not the `reviewThreads(first: 100)` inventory, so pagination cannot produce a false mismatch), locate the reply among the thread's comments, and fail loudly when the reply is not attached to the intended parent thread or the thread's parent comment author, file path, or line does not match the intended target (reply comments carry no path or line of their own; those attributes live on the parent comment). Reference it from the "Reply to review threads" guidelines as the mandatory post-reply check.
+- [x] In `receiving-review` "Feedback-source Workflow", extend step 13 (the reply step) with the target-thread verification gate: resolve the PR and fetch the complete thread inventory; select the target by stable thread ID; verify the parent comment author, file path, line, and a distinctive body fragment; post through the source adapter; re-fetch the thread and verify that the new reply is attached to the intended parent.
+- [x] State the failure semantics: if the pre-check mismatches or the post-check shows a mismatch, stop and report the state; do not attempt a second reply until the target is re-resolved from current API data.
+- [x] Commit: `skills: add target-thread verification gate to receiving-review and github-pr-workflow`
 
 ### Task 2: Contract terminology gate in `receiving-review`
 
 Files:
 - `agents/skills/receiving-review/SKILL.md`
 
-- [ ] Add a "Contract terminology gate" section: before replying about idempotency, retries, deduplication, replay, or conflict behavior, inspect the active API contract and the repository glossary or guidelines; name the actual mechanism in the reply; distinguish durable replay safety (natural keys, unique constraints, insert-if-absent) from `Idempotency-Key` header semantics (key storage, request replay, response replay, mismatch handling); do not replace the repository's chosen term with a stronger or narrower term without evidence.
-- [ ] State that the gate applies to any contract term with the same ambiguity, not only idempotency.
-- [ ] Commit: `skills: add contract terminology gate for review replies`
+- [x] Add a "Contract terminology gate" section: before replying about idempotency, retries, deduplication, replay, or conflict behavior, inspect the active API contract and the repository glossary or guidelines; name the actual mechanism in the reply; distinguish durable replay safety (natural keys, unique constraints, insert-if-absent) from `Idempotency-Key` header semantics (key storage, request replay, response replay, mismatch handling); do not replace the repository's chosen term with a stronger or narrower term without evidence.
+- [x] State that the gate applies to any contract term with the same ambiguity, not only idempotency.
+- [x] Commit: `skills: add contract terminology gate for review replies`
 
 ### Task 3: Prohibit unsupported roadmap statements
 
@@ -184,25 +186,25 @@ Files:
 - `agents/skills/receiving-review/SKILL.md`
 - `projects/.ai-playbook/agent_workflow_guidelines.md`
 
-- [ ] In `receiving-review` "Source Thread Replies" rules, add: do not say "future", "planned", "will be added", "separate capability", or similar roadmap language unless an authoritative project source records that plan; when only current scope is known, state current behavior and current scope without forecasting.
-- [ ] In `agent_workflow_guidelines.md`, add rule 37.5 beside 37.4 as the canonical home of the cross-cutting prohibition: a PR thread reply states current behavior and current scope; it implies a planned follow-up only when an authoritative project source records that plan. The `receiving-review` wording is the operational gate and points to guideline 37.5 rather than restating it as a second canonical rule.
-- [ ] Commit: `skills+guidelines: forbid unsupported roadmap language in review replies`
+- [x] In `receiving-review` "Source Thread Replies" rules, add: do not say "future", "planned", "will be added", "separate capability", or similar roadmap language unless an authoritative project source records that plan; when only current scope is known, state current behavior and current scope without forecasting.
+- [x] In `agent_workflow_guidelines.md`, add rule 37.5 beside 37.4 as the canonical home of the cross-cutting prohibition: a PR thread reply states current behavior and current scope; it implies a planned follow-up only when an authoritative project source records that plan. The `receiving-review` wording is the operational gate and points to guideline 37.5 rather than restating it as a second canonical rule.
+- [x] Commit: `skills+guidelines: forbid unsupported roadmap language in review replies`
 
 ### Task 4: Reviewer-reply hygiene checks
 
 Files:
 - `agents/skills/receiving-review/SKILL.md`
 
-- [ ] Extend "Source Thread Replies" rules (and cross-reference "Forbidden Responses"): reviewer replies contain the technical answer, evidence, and current behavior; omit ticket, PR, task, or internal-session meta-commentary unless needed to identify a code change; omit partner-only questions and decision prompts (aligns with `agent_workflow_guidelines.md` §37.4); avoid performative agreement and gratitude (existing rules stay); use the repository's terminology rather than inventing a status label.
-- [ ] Commit: `skills: add reviewer-reply hygiene rules to receiving-review`
+- [x] Extend "Source Thread Replies" rules (and cross-reference "Forbidden Responses"): reviewer replies contain the technical answer, evidence, and current behavior; omit ticket, PR, task, or internal-session meta-commentary unless needed to identify a code change; omit partner-only questions and decision prompts (aligns with `agent_workflow_guidelines.md` §37.4); avoid performative agreement and gratitude (existing rules stay); use the repository's terminology rather than inventing a status label.
+- [x] Commit: `skills: add reviewer-reply hygiene rules to receiving-review`
 
 ### Task 5: Architectural-question boundary
 
 Files:
 - `agents/skills/receiving-review/SKILL.md`
 
-- [ ] Add to "Feedback-source Workflow" (after the classification step): when a reviewer asks whether a new capability should exist, classify the thread as a design decision; if the current contract and authoritative guidelines do not settle it, stop and ask the human partner before posting any substantive accept/reject reply; if the contract does settle it, reply with the contract evidence and no roadmap implication. Reference the existing "Handling Unclear Feedback" stop rule as the enforcement pattern.
-- [ ] Commit: `skills: add architectural-question boundary for review threads`
+- [x] Add to "Feedback-source Workflow" (after the classification step): when a reviewer asks whether a new capability should exist, classify the thread as a design decision; if the current contract and authoritative guidelines do not settle it, stop and ask the human partner before posting any substantive accept/reject reply; if the contract does settle it, reply with the contract evidence and no roadmap implication. Reference the existing "Handling Unclear Feedback" stop rule as the enforcement pattern.
+- [x] Commit: `skills: add architectural-question boundary for review threads`
 
 ### Task 6: Correction protocol for a misplaced reply
 
@@ -210,17 +212,17 @@ Files:
 - `agents/skills/receiving-review/SKILL.md`
 - `agents/skills/github-pr-workflow/SKILL.md`
 
-- [ ] Add a "Misplaced reply correction" section to `receiving-review` with the ordered protocol: identify the misplaced comment by API ID; delete it when GitHub permits deletion; verify the deletion; resolve the correct parent again; post one replacement reply; verify the replacement's parent and body (via the Task 1 post-reply check); report the correction briefly in chat.
-- [ ] Add the hard rule: do not leave both the misplaced and corrected replies in the PR.
-- [ ] Scope note: the protocol covers inline review threads. A misplaced reply to a top-level PR Conversation comment follows the existing conversation-comment rules (`github-pr-workflow` "Reply to top-level PR Conversation comments"): no delete-and-repost simulation; report the placement error to the human partner in chat and let them decide.
-- [ ] Amend the surviving deletion rules so the protocol is not contradicted, scoped to inline review threads: in `receiving-review` "Source Thread Replies", amend the "Do not delete or replace reviewer feedback" bullet to name the agent's own misplaced inline-thread reply under the Misplaced reply correction protocol as the sanctioned deletion exception; in `github-pr-workflow`, amend the sentence "Deleting the agent's own response is allowed only when the user explicitly requests comment cleanup and the exact comment IDs have been verified" the same way. The top-level Conversation-comment no-delete-and-repost rule is unchanged in both. Deleting reviewer comments remains forbidden in both.
-- [ ] Commit: `skills: add misplaced-reply correction protocol to receiving-review and github-pr-workflow`
+- [x] Add a "Misplaced reply correction" section to `receiving-review` with the ordered protocol: identify the misplaced comment by API ID; delete it when GitHub permits deletion; verify the deletion; resolve the correct parent again; post one replacement reply; verify the replacement's parent and body (via the Task 1 post-reply check); report the correction briefly in chat.
+- [x] Add the hard rule: do not leave both the misplaced and corrected replies in the PR.
+- [x] Scope note: the protocol covers inline review threads. A misplaced reply to a top-level PR Conversation comment follows the existing conversation-comment rules (`github-pr-workflow` "Reply to top-level PR Conversation comments"): no delete-and-repost simulation; report the placement error to the human partner in chat and let them decide.
+- [x] Amend the surviving deletion rules so the protocol is not contradicted, scoped to inline review threads: in `receiving-review` "Source Thread Replies", amend the "Do not delete or replace reviewer feedback" bullet to name the agent's own misplaced inline-thread reply under the Misplaced reply correction protocol as the sanctioned deletion exception; in `github-pr-workflow`, amend the sentence "Deleting the agent's own response is allowed only when the user explicitly requests comment cleanup and the exact comment IDs have been verified" the same way. The top-level Conversation-comment no-delete-and-repost rule is unchanged in both. Deleting reviewer comments remains forbidden in both.
+- [x] Commit: `skills: add misplaced-reply correction protocol to receiving-review and github-pr-workflow`
 
 ### Task 7: Final validation
 
 Files: none (validation only)
 
-- [ ] Run the full `## Validation Commands` block; every probe passes on the edited tree.
-- [ ] Run `bash scripts/check-instruction-size.sh` (or the repo's equivalent gate) if it covers the edited skill files; resolve any size-gate finding by consolidation, not by weakening rules.
-- [ ] On the completion pass (all tasks `[x]`), move the backlog origin file to `docs/history/backlog/completed/` and mark it `Status: done`, per the backlog header's workflow line and the plans Plan Lifecycle.
-- [ ] Commit (only if the prior items produced no changes; otherwise fold into the fix commit): `chore: validate review-reply gates`
+- [x] Run the full `## Validation Commands` block; every probe passes on the edited tree.
+- [x] Run `bash scripts/check-instruction-size.sh` (or the repo's equivalent gate) if it covers the edited skill files; resolve any size-gate finding by consolidation, not by weakening rules.
+- [x] On the completion pass (all tasks `[x]`), move the backlog origin file to `docs/history/backlog/completed/` and mark it `Status: done`, per the backlog header's workflow line and the plans Plan Lifecycle.
+- [x] Commit (only if the prior items produced no changes; otherwise fold into the fix commit): `chore: validate review-reply gates`

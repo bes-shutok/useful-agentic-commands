@@ -44,11 +44,12 @@ Use this workflow when the user asks to process, triage, plan, address, or reply
 6. **Check branch scope**: before staging any fix, confirm the file belongs to this branch's scope. If a comment touches a file outside the branch's folder (e.g., `individual/<name>/` while on a team branch), plan that fix as a separate commit to the appropriate branch; do not include it in the PR's branch commit.
 7. Map each live comment's problem shape to the root-cause families and search the applicable project and user-level lesson corpora for relevant learnings. Apply repository-specific facts from those learnings when evaluating the feedback.
 8. Classify each live comment as correctness bug, test quality, cleanup, docs, false positive, or needs clarification.
+   - Architectural-question boundary: when a reviewer asks whether a new capability should exist, classify the thread as a design decision. If the current contract and authoritative guidelines do not settle it, stop and ask the human partner before posting any substantive accept/reject reply (same enforcement pattern as "Handling Unclear Feedback"). If the contract does settle it, reply with the contract evidence and no roadmap implication.
 9. When a bot cites a guideline to justify a flag, look up the guideline and confirm it applies to this specific file type before implementing. Standard license copyright headers, for example, are not subject to PII redaction rules even if the guideline covers the same keyword (see `coding_guidelines.md §12`).
 10. Deduplicate comments by root cause. Multiple threads about the same root cause become one task.
 11. If any item is unclear, stop and ask before implementing.
 12. Implement one root-cause task at a time and verify after each fix.
-13. Use the source adapter to reply to each comment after implementation or after deciding no code change is needed.
+13. Use the source adapter to reply to each comment after implementation or after deciding no code change is needed. Apply the target-thread verification gate on every reply: resolve the PR and fetch the complete thread inventory; select the target by stable thread ID; verify the parent comment author, file path, line, and a distinctive body fragment; post through the source adapter; re-fetch the thread and verify that the new reply is attached to the intended parent. If the pre-check mismatches or the post-check shows a mismatch, stop and report the state; do not attempt a second reply until the target is re-resolved from current API data.
 14. Follow the source adapter's rules for resolution. Never silently delete, resolve, or replace feedback or responses.
 
 Every CR comment thread must get a reply before it is resolved. For fixes, reference the commit SHA when available and describe what changed. For false positives, explain why no change was made.
@@ -295,7 +296,21 @@ Rules:
 - Reply in the existing source thread or comment when the source supports it.
 - Do not reply "Fixed" or cite a follow-up branch until the change exists in the working tree or a published commit on that branch.
 - Keep replies addressed to the reviewer or document participant, not the human partner directing the work.
-- Do not delete or replace reviewer feedback. Do not delete and repost your own response merely to change its location unless the user explicitly requests comment cleanup.
+- Do not use roadmap language: do not say "future", "planned", "will be added", "separate capability", or similar unless an authoritative project source records that plan (canonical home: `agent_workflow_guidelines.md` 37.5). When only current scope is known, state current behavior and current scope without forecasting.
+- Reviewer replies contain the technical answer, evidence, and current behavior; omit ticket, PR, task, or internal-session meta-commentary unless needed to identify a code change, and omit partner-only questions and decision prompts (aligns with `agent_workflow_guidelines.md` 37.4; see "Forbidden Responses"). Keep avoiding performative agreement and gratitude (existing rules stay). Use the repository's terminology rather than inventing a status label.
+- Do not delete or replace reviewer feedback. Do not delete and repost your own response merely to change its location unless the user explicitly requests comment cleanup. The agent's own misplaced inline-thread reply, handled under the "Misplaced reply correction" protocol, is the sanctioned deletion exception; deleting reviewer comments remains forbidden in all cases.
+
+## Contract terminology gate
+
+Before replying about idempotency, retries, deduplication, replay, or conflict behavior: inspect the active API contract and the repository glossary or guidelines, then name the actual mechanism in the reply. Distinguish durable replay safety (natural keys, unique constraints, insert-if-absent) from `Idempotency-Key` header semantics (key storage, request replay, response replay, mismatch handling). Do not replace the repository's chosen term with a stronger or narrower term without evidence.
+
+The gate applies to any contract term with the same ambiguity, not only idempotency: whenever a reply would use a term the repository defines differently or more narrowly, check the definition first and use the repository's term (canonical home: `agent_workflow_guidelines.md` 37.5).
+
+## Misplaced reply correction
+
+Scope: inline review threads only. When a reply landed on the wrong thread, follow this ordered protocol: identify the misplaced comment by API ID; delete it when GitHub permits deletion of the agent's own reply; verify the deletion; resolve the correct parent again from current API data; post one replacement reply; verify the replacement's parent and body via the post-reply check (`github-pr-workflow` "Verify thread attachment"); report the correction briefly in chat. Do not leave both the misplaced and the corrected replies in the PR.
+
+A misplaced reply to a top-level PR Conversation comment is different: the existing conversation-comment rules (`github-pr-workflow` "Reply to top-level PR Conversation comments") forbid delete-and-repost simulation. Report the placement error to the human partner in chat and let them decide.
 
 ## Soften / intentional revert tracking
 
@@ -417,6 +432,9 @@ Orchestration rule 4 applies **Fix-risk triage when fixes regenerate findings** 
 
 ### With `review-reconciliation` skill
 Use reconciliation for recurring-root, contradictory-artifact, or evidence-ownership analysis. This skill retains fix-vs-backlog triage and does not treat reconciliation's artifact changes as independently reviewed; the original review orchestrator must run the next fresh round.
+
+### With `github-pr-workflow` skill
+Source adapter for GitHub PR feedback: this skill's Feedback-source Workflow step 13 applies the target-thread verification gate through that skill's shared `verify_thread_attachment` operation, and its "Misplaced reply correction" protocol is the sanctioned deletion exception referenced by that skill's deletion rules. See `../github-pr-workflow/SKILL.md`.
 
 ### With `doing-code-review` / `review-agents`
 Accepted human findings that the panel missed feed Step 2.5 Guideline Pack awareness and optional catalog/overlay patches (see **Agent corpus feedback** above). Pattern IDs stay abstract; overlays and guidelines carry stack/project detail. Documentation and comment findings are evaluated with `review-agents/documentation.md` phase 2 gates, including the remove-or-freeze disposition for outdated docs (see **Documentation and Comment Findings** above).

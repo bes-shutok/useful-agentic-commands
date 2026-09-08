@@ -166,6 +166,36 @@ Reply guidelines:
 - For false positives: explain why the code is correct, citing API signatures, versions, or guidelines as evidence.
 - For PR-description-only updates: state that the description was updated to match the implementation.
 - **Reviewer-facing only:** do not ask your human partner questions in the reply (cherry-pick onto another branch, confirm push, choose options). Those belong in chat; the PR reply stays a closed technical statement for the reviewer.
+- After posting, run the mandatory `verify_thread_attachment` check ("Verify thread attachment" below) and stop on any mismatch.
+
+### Verify thread attachment
+
+Operation name: `verify_thread_attachment` (a shared GitHub PR operation; call it from review skills instead of duplicating the check).
+
+Mandatory post-reply check after every `addPullRequestReviewThreadReply`. Input: the new reply's comment ID (from the mutation response) plus the intended parent thread ID.
+
+Query the target thread by its `PRRT_` ID directly: a single-thread node query, not the `reviewThreads(first: 100)` inventory, so pagination cannot produce a false mismatch. Fetch the most recent comments (`last: 50`, paginating when `totalCount` exceeds the page) so a just-posted reply is visible even in long threads:
+
+```bash
+gh api graphql -f query='query {
+  node(id: "PRRT_...") {
+    ... on PullRequestReviewThread {
+      id
+      comments(last: 50) {
+        nodes { id author { login } body path line }
+        totalCount
+      }
+    }
+  }
+}'
+```
+
+Then verify:
+- The new reply's comment ID appears among the thread's `comments` nodes (reply comments carry no path or line of their own; those attributes live on the parent comment).
+- The thread's parent comment (first node) author, file path, and line match the intended target.
+- The new reply's body matches the text that was posted.
+
+Fail loudly on any mismatch: report the expected versus actual attachment state as an error; do not smooth over, retry silently, or post another reply until the target is re-resolved from current API data.
 
 ### Reply to top-level PR Conversation comments
 
@@ -173,7 +203,7 @@ A top-level PR Conversation comment is an issue comment, not an inline review th
 
 If UI control is unavailable in the current environment, do not delete or repost existing responses to simulate a reply. Leave reviewer feedback unchanged and report the capability gap to the user. A quoted top-level comment is only a fallback when the user explicitly accepts that presentation.
 
-Never delete reviewer comments. Deleting the agent's own response is allowed only when the user explicitly requests comment cleanup and the exact comment IDs have been verified.
+Never delete reviewer comments. Deleting the agent's own response is allowed only when the user explicitly requests comment cleanup and the exact comment IDs have been verified, or when the agent's own misplaced inline review-thread reply is corrected under the "Misplaced reply correction" protocol in `receiving-review` (inline review threads only; reviewer comments are never deleted). The top-level Conversation-comment no-delete-and-repost rule is unchanged.
 
 ### Resolve review threads
 Resolve only bot or automated threads after replying:
@@ -311,3 +341,6 @@ When the user asks to actually create the PR branches (not just plan them):
 
 ### With `update-stacked-branches`
 Owns refreshing an open stacked chain when trunk advances. During that restack it owns PR base retarget (`gh pr edit --base`). This skill keeps post-squash-merge `rebase --onto`, one-off `-squashed` branch creation, and other PR admin. See `../update-stacked-branches/SKILL.md`.
+
+### With `receiving-review`
+Consumer of the shared GitHub PR operations for passive review feedback: thread inventory, `verify_thread_attachment`, reply/resolution mechanics, and the deletion rules this skill owns. This skill references `receiving-review`'s "Misplaced reply correction" protocol as the only sanctioned delete-and-repost path for the agent's own misplaced inline-thread reply. See `../receiving-review/SKILL.md`.
