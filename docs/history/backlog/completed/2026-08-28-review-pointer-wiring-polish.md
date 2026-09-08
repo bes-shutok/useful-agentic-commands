@@ -1,6 +1,6 @@
 # Backlog: Review pointer-wiring polish (fix-risk deferred)
 
-Status: backlog
+Status: done (executed 2026-09-08 via docs/plans/completed/2026-09-04-review-pointer-wiring-polish.md; items 1-5,7,8 landed by Tasks 1-3; item 6 satisfied pre-plan by no-edit absence sweep per plan Assumptions)
 Workflow: pre-plan (promote via `plans` skill when scheduled)
 
 ## Problem

@@ -18,6 +18,8 @@ Review artifacts: `docs/reviews/2026-09-04-plan-review-review-pointer-wiring-pol
 - assume all edits are instruction-prose single-sourcing with no semantic change at the pointed-at rules; validation is grep-based because the repo has no test harness for skill markdown; basis: repo evidence (skill files are prose instruction sets).
 - assume no separate origin copy of the edited skills needs syncing: `~/.agents/skills` is a symlink to this repo's `agents/skills/` (verified 2026-09-04), so repo edits are the live runtime surface and the repo is canonical; basis: host filesystem evidence (`ls -la ~/.agents/skills`).
 
+Decision points requiring a grill: none remain.
+
 ## Gist & Examples
 
 Six skill files carry near-copy restatements of rules that are already single-sourced in their provider sections. Each restatement is a drift hazard: when the provider changes, the copies silently diverge (the Step 3.5 row already dropped the "non-interactive" and "minimal" qualifiers). This plan collapses every copy to a name-only pointer and renames the catalog section that all targeted-round call sites point at.
@@ -58,7 +60,7 @@ Not changed: the decision content itself. `receiving-review` **Fix-risk triage w
 
 **Production code (instruction sources):**
 - `agents/skills/review-agents/review-panel-selection.md` (only the `### Review-loop follow-ups` section heading and its preference bullet are in scope; all other content frozen)
-- `agents/skills/receiving-review/SKILL.md` (only rule 4 of **Staging doc triage outcomes** and the **Fix-risk triage when fixes regenerate findings** closing paragraph are in scope; all other content frozen)
+- `agents/skills/receiving-review/SKILL.md` (only rule 4 of **Staging doc triage outcomes**, the `(Review-loop follow-ups)` pointer in **Fix-risk triage when fixes regenerate findings** rule 4, and that section's closing paragraph are in scope; all other content frozen)
 - `agents/skills/review-loop/SKILL.md` (only orchestration rule 4 is in scope; all other content frozen)
 - `agents/skills/execute-plan/SKILL.md` (only Hard Gates 17 and 23, the Step 3.5 max-rounds row, and the Step 3.3 verification gate item 4 are in scope; all other content frozen)
 - `agents/skills/execute-plan/subagent-prompts.md` (only Address Review step 7 is in scope; all other content frozen)
@@ -107,8 +109,8 @@ grep -qF 'stop and ask per Hard Gate 23' agents/skills/execute-plan/SKILL.md || 
 no_match 'ends iterations until the user answers' agents/skills/review-loop/SKILL.md
 grep -qF 'follows the stop clause of `receiving-review`' agents/skills/review-loop/SKILL.md \
   || fail "review-loop stop note not collapsed"
-no_match 'record it as returned-for-ask, not backlogged' agents/skills/execute-plan/subagent-prompts.md
-no_match 'is recorded as returned-for-ask, not backlogged' agents/skills/execute-plan/SKILL.md
+no_match 'record it as returned-for-ask per review-staging' agents/skills/execute-plan/subagent-prompts.md
+no_match 'is recorded as returned-for-ask per review-staging' agents/skills/execute-plan/SKILL.md
 grep -qF 'follows the **Backlog capture** returned-for-ask exception' agents/skills/execute-plan/SKILL.md \
   || fail "Step 3.3 gate item 4 not reduced to pointer"
 grep -qF 'durable backlog item per `receiving-review` **Backlog capture**' agents/skills/execute-plan/subagent-prompts.md \
@@ -131,7 +133,7 @@ fi
 echo "ALL VALIDATIONS PASSED"
 ```
 
-RED-today evidence (probed against the current tree, 2026-09-04, all fired): `Review-loop follow-ups` matched once in each of the four Task 1 files; the Hard Gate 17 span, the Step 3.5 stop-and-ask span, the review-loop stop-note span, the subagent returned-for-ask span, the execute-plan Step 3.3 returned-for-ask span, and the receiving-review Blocking-mechanic span each matched exactly once; `has no separate worker-coverage exit rule` matched zero (the item 6 absence probe is born GREEN and guards regression only).
+RED-today evidence (probed against the current tree, 2026-09-04, all fired; returned-for-ask spans re-baselined 2026-09-08 after commit e754d33 rewrote them and were re-probed the same day, both fired): `Review-loop follow-ups` matched once in each of the four Task 1 files; the Hard Gate 17 span, the Step 3.5 stop-and-ask span, the review-loop stop-note span, the subagent returned-for-ask span (`record it as returned-for-ask per review-staging`), the execute-plan Step 3.3 returned-for-ask span (`is recorded as returned-for-ask per review-staging`), and the receiving-review Blocking-mechanic span each matched exactly once; `has no separate worker-coverage exit rule` matched zero (the item 6 absence probe is born GREEN and guards regression only); the `durable backlog item per `receiving-review` **Backlog capture**` and `rewrite the Blocking bullet in place` positive probes each matched exactly once and are born GREEN keep-guards (they protect the surviving pointer and the frozen contract owner's mechanic, and must stay present, never RED).
 
 ### Task 1: Catalog section rename and split, with call-site pointers
 
@@ -141,11 +143,11 @@ Files:
 - `agents/skills/review-loop/SKILL.md`
 - `agents/skills/execute-plan/SKILL.md`
 
-- [ ] Rename the section header `### Review-loop follow-ups` to `### Targeted follow-ups` in `review-agents/review-panel-selection.md`
-- [ ] Split the overloaded second bullet into two bullets: (a) keep the focused-over-full preference and its fewer-than-five-workers applicability sentence together; (b) move the exit-coverage sentences into a new bullet starting `- Exit-coverage rules still apply before declaring exit on a focused clear round:` carrying the review-loop exit-criteria sentence (including the design-simplicity hybrid), the Phase 3 Step 3.4/3.5 pointer, and the once-only exit-hybrid allowance sentence, wording preserved
-- [ ] Update the three call-site section pointers to the new name: `receiving-review/SKILL.md` rule 4 `(Review-loop follow-ups)` → `(Targeted follow-ups)`; `review-loop/SKILL.md` orchestration rule 4 `(Review-loop follow-ups; orchestration rule 3 selects the set)` → `(Targeted follow-ups; orchestration rule 3 selects the set)`; `execute-plan/SKILL.md` Hard Gate 23 `(Review-loop follow-ups)` → `(Targeted follow-ups)` (this rename completes backlog item 1; the call sites are already name-only apart from the section title)
-- [ ] Do not edit the Phase 3 exit sentence further: backlog item 6 is already satisfied (see Assumptions)
-- [ ] Run the Task 1 probes from the Validation Commands block → expect Task 1 probes green, Task 2/3 probes still failing (RED-today spans present)
+- [x] Rename the section header `### Review-loop follow-ups` to `### Targeted follow-ups` in `review-agents/review-panel-selection.md`
+- [x] Split the overloaded second bullet into two bullets: (a) keep the focused-over-full preference and its fewer-than-five-workers applicability sentence together; (b) move the exit-coverage sentences into a new bullet starting `- Exit-coverage rules still apply before declaring exit on a focused clear round:` carrying the review-loop exit-criteria sentence (including the design-simplicity hybrid), the Phase 3 Step 3.4/3.5 pointer, and the once-only exit-hybrid allowance sentence, wording preserved
+- [x] Update the three call-site section pointers to the new name: `receiving-review/SKILL.md` rule 4 `(Review-loop follow-ups)` → `(Targeted follow-ups)`; `review-loop/SKILL.md` orchestration rule 4 `(Review-loop follow-ups; orchestration rule 3 selects the set)` → `(Targeted follow-ups; orchestration rule 3 selects the set)`; `execute-plan/SKILL.md` Hard Gate 23 `(Review-loop follow-ups)` → `(Targeted follow-ups)` (this rename completes backlog item 1; the call sites are already name-only apart from the section title)
+- [x] Do not edit the Phase 3 exit sentence further: backlog item 6 is already satisfied (see Assumptions)
+- [x] Run the Task 1 probes from the Validation Commands block → expect Task 1 probes green, Task 2/3 probes still failing (RED-today spans present)
 - [ ] Commit: `skills: rename catalog follow-up section to Targeted follow-ups`
 
 ### Task 2: Collapse stop-condition paraphrases to name-only pointers
@@ -155,12 +157,12 @@ Files:
 - `agents/skills/execute-plan/subagent-prompts.md`
 - `agents/skills/review-loop/SKILL.md`
 
-- [ ] Hard Gate 17 (`execute-plan/SKILL.md`): replace the clause `the fix-risk stop for user direction when a must-stay-blocking finding has neither a minimal additive path nor a user in a non-interactive run (same section)` with `the fix-risk stop for user direction under the same section` (backlog item 3)
-- [ ] Step 3.5 max-rounds row (`execute-plan/SKILL.md`): replace `take the Fix-risk direction per Hard Gate 23 (a stop-and-ask)` with `stop and ask per Hard Gate 23 / `receiving-review` **Fix-risk triage when fixes regenerate findings**`, keeping the surrounding parentheses content (direction taken regardless of reconciliation trigger, reconciliation still runs first, budget question folded into the single ask, short session note still written) — this restores the dropped "non-interactive" and "minimal" qualifiers by delegation (backlog item 8a)
-- [ ] Orchestration rule 4 stop note (`review-loop/SKILL.md`): replace `A fix-risk stop for user direction ends iterations until the user answers, like the max-rounds stop.` with `A fix-risk stop for user direction follows the stop clause of `receiving-review` **Fix-risk triage when fixes regenerate findings**.` (backlog item 8b)
-- [ ] Address Review step 7 (`execute-plan/subagent-prompts.md`): delete the parenthetical `(a finding held `pending` for the fix-risk user decision per **Fix-risk triage when fixes regenerate findings** is the exception: record it as returned-for-ask, not backlogged)`; the sentence ends after `record its path on the finding or in the execution log`; the `receiving-review` **Backlog capture** pointer stays (backlog item 7)
-- [ ] Step 3.3 verification gate item 4 (`execute-plan/SKILL.md`): replace `a finding held `pending` for the fix-risk user decision (Hard Gate 23) is recorded as returned-for-ask, not backlogged.` with `a finding held `pending` for the fix-risk user decision (Hard Gate 23) follows the **Backlog capture** returned-for-ask exception (`receiving-review`).` — the last full restatement of the exception collapses to a pointer (backlog item 7 family)
-- [ ] Run the Task 2 probes → expect Task 2 probes green, Task 1 probes still green, Task 3 probes still failing
+- [x] Hard Gate 17 (`execute-plan/SKILL.md`): replace the clause `the fix-risk stop for user direction when a must-stay-blocking finding has neither a minimal additive path nor a user in a non-interactive run (same section)` with `the fix-risk stop for user direction under the same section` (backlog item 3)
+- [x] Step 3.5 max-rounds row (`execute-plan/SKILL.md`): replace `take the Fix-risk direction per Hard Gate 23 (a stop-and-ask)` with `stop and ask per Hard Gate 23 / `receiving-review` **Fix-risk triage when fixes regenerate findings**`, keeping the surrounding parentheses content (direction taken regardless of reconciliation trigger, reconciliation still runs first, budget question folded into the single ask, short session note still written) — this restores the dropped "non-interactive" and "minimal" qualifiers by delegation (backlog item 8a)
+- [x] Orchestration rule 4 stop note (`review-loop/SKILL.md`): replace `A fix-risk stop for user direction ends iterations until the user answers, like the max-rounds stop.` with `A fix-risk stop for user direction follows the stop clause of `receiving-review` **Fix-risk triage when fixes regenerate findings**.` (backlog item 8b)
+- [x] Address Review step 7 (`execute-plan/subagent-prompts.md`): delete the parenthetical `(a finding held `pending` for the fix-risk user decision per **Fix-risk triage when fixes regenerate findings** is the exception: record it as returned-for-ask per review-staging's receiving-review consumer row, not backlogged)` — span re-baselined 2026-09-08 after commit e754d33 inserted the `per review-staging's receiving-review consumer row` phrase; the sentence ends after `record its path on the finding or in the execution log`; the `receiving-review` **Backlog capture** pointer stays (backlog item 7)
+- [x] Step 3.3 verification gate item 4 (`execute-plan/SKILL.md`): replace `a finding held `pending` for the fix-risk user decision (Hard Gate 23) is recorded as returned-for-ask per review-staging's receiving-review consumer row, not backlogged.` with `a finding held `pending` for the fix-risk user decision (Hard Gate 23) follows the **Backlog capture** returned-for-ask exception (`receiving-review`).` — the last full restatement of the exception collapses to a pointer (backlog item 7 family; span re-baselined 2026-09-08 after commit e754d33)
+- [x] Run the Task 2 probes → expect Task 2 probes green, Task 1 probes still green, Task 3 probes still failing
 - [ ] Commit: `skills: collapse fix-risk stop paraphrases to name-only pointers`
 
 ### Task 3: receiving-review single-sourcing
@@ -168,13 +170,13 @@ Files:
 Files:
 - `agents/skills/receiving-review/SKILL.md`
 
-- [ ] **Staging doc triage outcomes** step 4: replace the full mechanic `When an authorizing rule directs a Blocking re-evaluation (see **Fix-risk triage when fixes regenerate findings**), rewrite the finding's **Blocking** bullet in place, record the rationale on its Analysis section, and mirror the flip in the sidecar `findings[].blocking` per review-staging **Severity and ordering** (Triage presentation freeze).` with `When an authorizing rule directs a Blocking re-evaluation, apply the review-staging **Triage presentation freeze** (Severity and ordering) procedure.` — the full three-part mechanic stays in `review-staging` (contract owner; backlog item 4)
-- [ ] **Fix-risk triage when fixes regenerate findings** closing paragraph: immediately after `until answered, the finding stays `pending`.` insert `When the answer arrives, the orchestrator applies **Staging doc triage outcomes** to the held finding before the next round.` — the backlog-or-fix direction stays single-sourced in **Backlog capture**, so the insert must not restate it (backlog item 5)
-- [ ] Run the Task 3 probes → expect Task 3 probes green
+- [x] **Staging doc triage outcomes** step 4: replace the full mechanic `When an authorizing rule directs a Blocking re-evaluation (see **Fix-risk triage when fixes regenerate findings**), rewrite the finding's **Blocking** bullet in place, record the rationale on its Analysis section, and mirror the flip in the sidecar `findings[].blocking` per review-staging **Severity and ordering** (Triage presentation freeze).` with `When an authorizing rule directs a Blocking re-evaluation, apply the review-staging **Triage presentation freeze** (Severity and ordering) procedure.` — the full three-part mechanic stays in `review-staging` (contract owner; backlog item 4)
+- [x] **Fix-risk triage when fixes regenerate findings** closing paragraph: immediately after `until answered, the finding stays `pending` and is recorded as returned-for-ask per review-staging's receiving-review consumer row.` insert `When the answer arrives, the orchestrator applies **Staging doc triage outcomes** to the held finding before the next round.` — anchor re-baselined 2026-09-08 after commit e754d33 extended the sentence; insert after the full sentence ends, not mid-clause; the backlog-or-fix direction stays single-sourced in **Backlog capture**, so the insert must not restate it (backlog item 5)
+- [x] Run the Task 3 probes → expect Task 3 probes green
 - [ ] Commit: `skills: single-source blocking re-evaluation and post-answer triage ownership`
 
 ### Task 4: Full validation
 
-- [ ] `bash -n` the Validation Commands block → expect no syntax errors
-- [ ] Run the full Validation Commands block from the repository root → expect `ALL VALIDATIONS PASSED`
-- [ ] `git status --short` → expect only the five in-scope skill files modified (plus this plan's own artifacts); `agents/skills/review-staging/SKILL.md` unmodified; `scripts/plan_readiness.py` untouched
+- [x] `bash -n` the Validation Commands block → expect no syntax errors
+- [x] Run the full Validation Commands block from the repository root → expect `ALL VALIDATIONS PASSED`
+- [x] `git status --short` → expect only the five in-scope skill files modified (plus this plan's own artifacts); `agents/skills/review-staging/SKILL.md` unmodified; `scripts/plan_readiness.py` untouched

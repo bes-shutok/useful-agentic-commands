@@ -2,6 +2,7 @@
 
 Status: open
 Workflow: backlog
+Grouping: to be joined with docs/history/backlog/2026-09-08-plans-grill-answer-required-readiness-gate.md into ONE authoring plan (same plans+grilling surface, 2026-09-08 user direction)
 Source: docs/reviews/2026-09-07-plans-facts-do-not-resolve-design-ambiguity-code-review-r1.md (overflow entry, design-simplicity, Low, architecture#duplicated-concept)
 Severity: Low
 Scope: agents/skills/plans/SKILL.md; agents/skills/grilling/SKILL.md
