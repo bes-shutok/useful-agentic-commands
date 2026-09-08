@@ -1,6 +1,6 @@
 # Backlog: skip redundant confirmation for feature branches from trunk
 
-Status: open
+Status: done
 Workflow: backlog
 Covered by: Task 8 of docs/plans/2026-09-08-execute-plan-fresh-review-coverage-gaps.md (do not join into other plans; archive at that plan's completion)
 Origin: User feedback during CRM-691 plan authoring on 2026-09-08

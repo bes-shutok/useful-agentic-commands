@@ -113,6 +113,86 @@ V1_OPTIONAL_TOP_LEVEL_FIELDS = ("depth", "domains", "verdict", "extensions", "us
 # so a trailing newline cannot slip through, ASCII-only ``[0-9]`` so
 # Unicode decimal digits cannot pass (r1 F1).
 V1_DATE_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}\Z")
+# Extended version-1 freshness fields (fresh-review coverage plan, Task 3).
+# A version-1 record whose ``date`` is EARLIER than EXTENDED_SIDECAR_MIN_DATE
+# is accepted-legacy and exempt from the four extended fields. The constant
+# is the day after the implementing commit's date (implementation lands
+# 2026-09-08), so same-day records stay exempt and only post-landing
+# records require the fields.
+EXTENDED_SIDECAR_MIN_DATE = "2026-09-09"
+# r4 F1: the no-fix marker vocabulary. Producers spell the absent token as
+# ``none`` (the Markdown template spelling), ``null`` (the JSON sidecar
+# spelling copied into the Markdown line), or ``n/a``; all three count as
+# ABSENT on BOTH surfaces, so a null-spelled Metadata line against a
+# JSON-null sidecar agrees instead of failing the readiness gate as a
+# fake-real sha.
+ABSENT_LAST_FIX_TOKENS = frozenset({"none", "null", "n/a"})
+
+
+def _last_fix_present(value) -> bool:
+    """True iff the value is a real sha (r4 F1: case-insensitive ``none``,
+    ``null``, and ``n/a`` are the absent spellings)."""
+    return (
+        isinstance(value, str)
+        and bool(value.strip())
+        and value.strip().lower() not in ABSENT_LAST_FIX_TOKENS
+    )
+
+
+VALID_REVIEW_MODES = frozenset(
+    {"fresh-adversarial", "targeted", "verification-only"}
+)
+# r3 F9: the sidecar risk_signals tags are the closed kebab-case set
+# documented in review-staging SKILL.md (the kebab forms of the five
+# changed-risk signal classes); an arbitrary tag silently drifts
+# cross-round aggregation off the documented vocabulary.
+VALID_RISK_SIGNALS = frozenset(
+    {
+        "public-api",
+        "cross-service-call",
+        "generated-or-nullable-model",
+        "serializer",
+        "security-or-rollout-boundary",
+    }
+)
+V1_EXTENDED_REQUIRED_FIELDS = (
+    "review_mode",
+    "risk_signals",
+    "prior_findings_filter",
+    "last_fix_commit",
+)
+# Release-gate ledger classification enum (fresh-review coverage plan,
+# Tasks 5 and 7): every deferred-boundary entry must carry exactly one of
+# these values.
+VALID_RELEASE_GATE_CLASSIFICATIONS = (
+    "implementation blocker",
+    "release blocker owned elsewhere",
+    "non-blocking follow-up",
+)
+# The Witness ledger empty shape (review-staging SKILL.md): the Metadata
+# line that stands in for a populated ``### Witness ledger`` when the diff
+# has no changed public mutator.
+WITNESS_LEDGER_NA_LINE_RE = re.compile(
+    r"^-\s*Witness ledger:\s*N/A \(no public mutators\)\s*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+# A clean verdict is the round verdict line declaring zero unresolved
+# findings and a clear round (both the "0 Medium+ findings; clear round"
+# shape matched by CLEAR_ROUND_RE and the review-loop "0 unresolved blocking
+# findings; clear round" shape). Declared scope (r1 F13): the freshness
+# cross-field rules keyed on this pattern apply only to clear-round-shaped
+# verdicts; plan/RFC/Confluence ready=yes verdicts are out of scope.
+# r2 F9: the separator between the findings count and "clear round" is
+# broadened to ";", ":", "-", and the em-dash character, so a rephrased
+# separator (e.g. "0 unresolved blocking findings - clear round") cannot
+# silently disarm every clean-keyed freshness rule. r3 F2: "," and "."
+# join the separator class, closing the half-widened r2 fix (a comma- or
+# period-separated verdict is the same one-character rephrase).
+CLEAN_VERDICT_RE = re.compile(
+    r"0\s+(?:unresolved\s+blocking\s+|Medium\+?\s+)?findings\s*[;:,.\-\u2014]\s*"
+    r"clear\s+round",
+    re.IGNORECASE,
+)
 # Sibling compat handshake contract: consumers of this module pair against
 # the COMPAT_VERSION value they shipped with; bump it ONLY together with
 # every consumer's expected constant.
@@ -710,16 +790,495 @@ def stats_sidecar_path(staging_path: Path) -> Path:
     return staging_path.with_suffix(".stats.json")
 
 
-def metadata_allows_stats_skip(content: str) -> bool:
-    meta = re.search(r"^## Metadata\s*$", content, re.MULTILINE)
-    if not meta:
+def is_clean_verdict(content: str) -> bool:
+    """True iff the round verdict declares a clear round (fresh-review
+    coverage plan, Task 3).
+
+    Scoped to the ``## Verdict for this round (before fixes)`` section.
+    r2 F8: when the verdict heading is absent the round is NOT clean (return
+    False) instead of falling back to the whole document, so a quoted
+    clear-round phrase in a finding Analysis or discarded row cannot arm the
+    freshness cross-field rules on a doc that never declared a verdict.
+    Matches both the ``0 Medium+ findings; clear round`` shape and the
+    review-loop ``0 unresolved blocking findings; clear round`` shape.
+    """
+    verdict_match = re.search(
+        r"## Verdict for this round \(before fixes\)(.*?)(?:\n## |\Z)",
+        content,
+        re.DOTALL | re.IGNORECASE,
+    )
+    if not verdict_match:
         return False
-    tail = content[meta.end() :]
-    tail = re.split(r"\n## ", tail, maxsplit=1)[0]
+    return bool(CLEAN_VERDICT_RE.search(verdict_match.group(1)))
+
+
+def validate_verdict_heading_grammar(
+    content: str, result: ValidationResult
+) -> None:
+    """Verdict heading grammar gate (r4 F3).
+
+    Any UNFENCED level-2 heading starting with ``## Verdict`` that is not
+    byte-exact ``## Verdict for this round (before fixes)`` is a named
+    heading-grammar-drift error. ``is_clean_verdict`` keys every clean-keyed
+    freshness rule on the canonical heading, so a present-but-rephrased
+    heading (the parenthetical dropped) makes the round read as not-clean
+    and silently disarms the verification-only and filter-yes contradiction
+    gates (the r2 absent-heading fail-closed fix left this present-but-
+    noncanonical shape fail-open). Fenced template copies are quoted
+    content, never headings (shared ``classify_fence_lines`` classifier).
+    """
+    canonical = "## Verdict for this round (before fixes)"
+    lines = content.splitlines()
+    events, _unclosed = classify_fence_lines(lines)
+    for idx, (kind, _value) in enumerate(events):
+        if kind != "heading":
+            continue
+        line = lines[idx].rstrip()
+        if re.match(r"^##[ \t]+Verdict", line, re.IGNORECASE) and line != canonical:
+            result.add_error(
+                f"verdict heading grammar drift: heading {line!r} is not "
+                f"the canonical {canonical!r}; a rephrased verdict heading "
+                "silently disarms every clean-keyed freshness gate"
+            )
+
+
+def _metadata_section(content: str) -> str | None:
+    """Return the ``## Metadata`` section body, or ``None`` when absent.
+
+    Fence-aware (r3 F3): the shared ``classify_fence_lines`` state machine
+    (with the ``classify_with_fallback`` partial fallback, reset by any
+    level-2 heading so an unclosed fence cannot swallow a later section)
+    owns the scan, so a fenced template copy cannot satisfy the heading
+    presence and fenced lines inside the section are masked (empty lines)
+    rather than parsed as Metadata values or counted as duplicate labels.
+    ``metadata_allows_stats_skip`` (r3 O14) delegates here for the same
+    single Metadata-heading grammar.
+    """
+    lines = content.splitlines()
+
+    def _is_level2_heading(line: str) -> bool:
+        return re.match(r"^##\s", line) is not None
+
+    events, _unclosed, reset_events = classify_with_fallback(
+        lines, _is_level2_heading
+    )
+    if reset_events is not None:
+        events = events + reset_events
+    body_lines: list[str] | None = None
+    for kind, value in events:
+        if body_lines is None:
+            if kind == "heading" and value.strip() == "## Metadata":
+                body_lines = []
+            continue
+        if kind == "heading" and _is_level2_heading(value):
+            break
+        if kind in ("ordinary", "heading"):
+            body_lines.append(value)
+        else:
+            # Fence openers, closes, and fenced content are masked: never
+            # parsed as values, never counted as duplicate labels.
+            body_lines.append("")
+    if body_lines is None:
+        return None
+    return "\n".join(body_lines)
+
+
+def _normalize_filter_value(raw: str) -> str:
+    """Normalize a Metadata filter token before the yes comparison.
+
+    r3 F10 stripped trailing punctuation; r4 F6 additionally strips ONE
+    matched surrounding pair of quotes (single, double, backtick) or
+    brackets/parentheses before the trailing-punctuation strip, so wrapped
+    shapes (``"yes"``, ``(yes)``, ``yes.)``) compare as yes instead of
+    escaping the clean-verdict contradiction.
+    """
+    value = raw.strip()
+    closing_for = {'"': '"', "'": "'", "`": "`", "(": ")", "[": "]"}
+    if (
+        len(value) >= 2
+        and value[0] in closing_for
+        and value[-1] == closing_for[value[0]]
+    ):
+        value = value[1:-1].strip()
+    return value.rstrip(",.;:")
+
+
+def validate_freshness_metadata(content: str, result: ValidationResult) -> None:
+    """Staging freshness metadata gates (fresh-review coverage plan, Task 3).
+
+    A clean verdict contradicts ``Review mode: verification-only`` (a
+    verification-only pass never satisfies the clean-round condition) and
+    ``Prior findings supplied as filter: yes`` (prior findings are context,
+    never a review filter, on a clean round). The ``Review mode`` value,
+    when the Metadata line is present, must be a single member of the mode
+    enum; template placeholders (multi-option ``|`` lists or ``<...>``
+    placeholders) are rejected (r1 F12). r1 F5 adds the Markdown twin of
+    the sidecar cross-field rule: a clean verdict with a non-none Metadata
+    ``Last fix commit`` requires ``Review mode: fresh-adversarial``. Absent
+    lines stay legal so pre-adoption records validate unchanged (the
+    date-keyed presence gate lives in
+    ``validate_date_keyed_freshness_lines``).
+    """
+    meta = _metadata_section(content)
+    if meta is None:
+        return
+    clean = is_clean_verdict(content)
+    # r2 F2: duplicate freshness labels shadow their own gates under
+    # first-match-wins parsing (a conforming line hides a violating one), so
+    # more than one occurrence of a gated label is a named error instead.
+    # r2 F4/O3: the value grammar accepts ``[ \t]*:`` before the value exactly
+    # like the presence regex's spaced-colon tolerance, and uses ``[ \t]``
+    # (never ``\s``) around value captures so a value cannot cross a line
+    # boundary onto the next Metadata bullet.
+    gated_labels = (
+        "Review mode",
+        "Prior findings supplied as filter",
+        "Last fix commit",
+    )
+    for label in gated_labels:
+        occurrences = re.findall(
+            rf"^-[ \t]*{re.escape(label)}[ \t]*:", meta, re.MULTILINE
+        )
+        if len(occurrences) > 1:
+            result.add_error(
+                f"duplicate freshness Metadata label {label!r}: {len(occurrences)} "
+                "matching lines; the first-match-wins shadowing shape is "
+                "rejected, keep exactly one line per label"
+            )
+    mode = re.search(
+        r"^-[ \t]*Review mode[ \t]*:[ \t]*(.+?)[ \t]*$",
+        meta,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    mode_enum_value = None
+    if mode:
+        mode_value = mode.group(1).strip()
+        # r1 F12: a placeholder never counts as a chosen mode; the verbatim
+        # template line "fresh-adversarial | targeted | verification-only"
+        # must not parse as the legal first token.
+        if "|" in mode_value:
+            result.add_error(
+                f"Metadata Review mode {mode_value!r} must be a single mode "
+                f"from {sorted(VALID_REVIEW_MODES)}; a multi-option template "
+                "placeholder containing '|' is not a chosen mode"
+            )
+        elif mode_value.startswith("<") and mode_value.endswith(">"):
+            result.add_error(
+                f"Metadata Review mode {mode_value!r} must be a single mode "
+                f"from {sorted(VALID_REVIEW_MODES)}; a '<...>' placeholder "
+                "value is not a chosen mode"
+            )
+        elif mode_value.lower() not in VALID_REVIEW_MODES:
+            result.add_error(
+                f"Metadata Review mode {mode_value!r} must be one of "
+                f"{sorted(VALID_REVIEW_MODES)}"
+            )
+        else:
+            mode_enum_value = mode_value.lower()
+            if clean and mode_enum_value == "verification-only":
+                result.add_error(
+                    "clean verdict contradicts Metadata Review mode "
+                    "'verification-only': a verification-only pass never "
+                    "satisfies the clean-round condition"
+                )
+    filt = re.search(
+        r"^-[ \t]*Prior findings supplied as filter[ \t]*:[ \t]*(\S+)",
+        meta,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    # r3 F10: trailing punctuation (",", ".", ";", ":") is stripped before
+    # the yes comparison, mirroring the verdict-separator tolerance, so a
+    # punctuated filter-yes line cannot slip past the contradiction rule.
+    # r4 F6: ``_normalize_filter_value`` additionally strips one matched
+    # surrounding quote/bracket pair, so wrapped shapes compare as yes too.
+    if (
+        filt
+        and clean
+        and _normalize_filter_value(filt.group(1)).lower() == "yes"
+    ):
+        result.add_error(
+            "clean verdict contradicts Metadata 'Prior findings supplied as "
+            "filter: yes': prior findings are context, never a review "
+            "filter, on a clean round"
+        )
+    # r1 F5: Markdown twin of the version-1 sidecar cross-field rule. The
+    # twin fires only when the mode line parses as a single valid enum
+    # value (malformed and placeholder values already report above, and
+    # verification-only reports through its own clean-verdict rule), so the
+    # bypass shape (skipped sidecar plus a targeted label) cannot pass.
+    last_fix = re.search(
+        r"^-[ \t]*Last fix commit[ \t]*:[ \t]*(.+?)[ \t]*$",
+        meta,
+        re.MULTILINE | re.IGNORECASE,
+    )
+    if last_fix and clean and mode_enum_value is not None:
+        lf_value = last_fix.group(1).strip()
+        # r4 F1: the unified no-fix vocabulary (none/null/n/a) is absent.
+        lf_present = _last_fix_present(lf_value)
+        if lf_present and mode_enum_value != "fresh-adversarial":
+            result.add_error(
+                "clean verdict with Metadata Last fix commit "
+                f"{lf_value!r} requires Metadata Review mode "
+                "'fresh-adversarial'; a "
+                f"{mode_enum_value!r} label on a post-fix clean round "
+                "bypasses the fresh-adversarial mandate"
+            )
+
+
+# r1 F6: the four Metadata freshness lines required when the staging
+# filename's leading date is on or after EXTENDED_SIDECAR_MIN_DATE.
+DATE_KEYED_FRESHNESS_META_LINES = (
+    "Review mode",
+    "Changed-risk signals",
+    "Prior findings supplied as filter",
+    "Last fix commit",
+)
+
+
+def validate_date_keyed_freshness_lines(
+    staging_name: str,
+    content: str,
+    result: ValidationResult,
+    *,
+    sidecar_date: str | None = None,
+) -> None:
+    """Date-keyed Markdown freshness presence gate (r1 F6).
+
+    When the staging filename's leading ``YYYY-MM-DD`` date is on or after
+    ``EXTENDED_SIDECAR_MIN_DATE``, the Metadata section must carry the four
+    freshness lines; filenames dated earlier are grandfathered so
+    pre-adoption records validate unchanged (the sidecar twin of this fence
+    keys on the sidecar ``date`` field in ``validate_version1_payload``).
+
+    r3 F7: the presence regex uses ``[ \t]*`` (never ``\\s*``) around the
+    label, so a label counts as present only when it sits on one line with
+    its colon; a multi-line ``- Review mode`` / ``: targeted`` shape no
+    longer satisfies presence while evading every value gate.
+
+    r3 F11: when the filename has NO parseable leading date but the sidecar
+    ``date`` is on or after ``EXTENDED_SIDECAR_MIN_DATE``, the gate fails
+    closed demanding the conventional dated filename, so a post-fence
+    record cannot shed the Markdown freshness obligations through an
+    unconventional filename alone.
+    """
+    name_date = re.match(r"(\d{4}-\d{2}-\d{2})", staging_name)
+    if not name_date:
+        if (
+            sidecar_date is not None
+            and sidecar_date >= EXTENDED_SIDECAR_MIN_DATE
+        ):
+            result.add_error(
+                f"staging filename {staging_name!r} has no leading "
+                "YYYY-MM-DD date while the stats sidecar is dated "
+                f"{sidecar_date!r} (on or after EXTENDED_SIDECAR_MIN_DATE "
+                f"{EXTENDED_SIDECAR_MIN_DATE}); post-fence records must use "
+                "the conventional dated staging filename"
+            )
+        return
+    if name_date.group(1) < EXTENDED_SIDECAR_MIN_DATE:
+        return
+    meta = _metadata_section(content)
+    for line_label in DATE_KEYED_FRESHNESS_META_LINES:
+        if meta is None or not re.search(
+            rf"^-[ \t]*{re.escape(line_label)}[ \t]*:", meta, re.MULTILINE
+        ):
+            result.add_error(
+                f"staging filename dated {name_date.group(1)} (on or after "
+                f"EXTENDED_SIDECAR_MIN_DATE {EXTENDED_SIDECAR_MIN_DATE}) is "
+                f"missing freshness Metadata line {line_label!r}"
+            )
+
+
+def _witness_ledger_populated(content: str) -> bool:
+    """True iff the doc carries a ``### Witness ledger`` section with at
+    least one table data row (fresh-review coverage plan, Task 7).
+
+    Structural: the empty shape is the Metadata N/A line, never a heading
+    with a bare ``None.`` body, so presence of the heading alone is not
+    "populated"; a data row (any ``|`` line that is neither a separator row
+    nor a header row) is required. r1 F9: a header row is any pipe row
+    immediately followed by a separator row, not only the row carrying the
+    canonical column title, so a header-only table with non-canonical column
+    titles does not count as populated. r2 F5: a data row whose first cell
+    is a ``<...>`` placeholder (the verbatim review-staging template row)
+    never counts as recorded evidence. r2 F7: fence interiors are excluded
+    via the shared ``classify_fence_lines`` fence state machine, so a fenced
+    example table under the heading is quoted content, not a populated
+    ledger. r4 F2: the section body ends at ANY heading of level 3 or
+    shallower (``#``, ``##``, ``###``), not only ``### ``; previously a bare
+    ``### Witness ledger`` followed by a ``## Findings``-level heading
+    leaked the findings-preamble pipe table into the witness body and
+    counted an empty ledger as populated.
+    """
+    sec = re.search(r"^### Witness ledger\s*$", content, re.MULTILINE)
+    if not sec:
+        return False
+    body = re.split(r"\n#{1,3}(?=[ \t])", content[sec.end():], maxsplit=1)[0]
+    lines = body.splitlines()
+    events, _unclosed = classify_fence_lines(lines)
+    for idx, (kind, _value) in enumerate(events):
+        if kind != "ordinary":
+            # Fence openers, closes, and fenced content (r2 F7) are never
+            # ledger rows; a heading inside the section starts a sibling
+            # section's content and is equally not a row.
+            continue
+        stripped = lines[idx].strip()
+        if not stripped.startswith("|"):
+            continue
+        if re.match(r"^\|[-:| ]+\|$", stripped):
+            continue
+        nxt = lines[idx + 1].strip() if idx + 1 < len(lines) else ""
+        if nxt.startswith("|") and re.match(r"^\|[-:| ]+\|$", nxt):
+            continue
+        cells = stripped.split("|")
+        first_cell = cells[1].strip() if len(cells) > 1 else ""
+        if re.fullmatch(r"<[^>|]*>", first_cell):
+            # r2 F5: the template placeholder row is not witness evidence.
+            continue
+        return True
+    return False
+
+
+def validate_witness_ledger_shape(
+    content: str,
+    result: ValidationResult,
+    *,
+    last_fix: str | None,
+    source: str,
+) -> None:
+    """Post-fix rounds must carry a Witness ledger in one of the two legal
+    shapes (fresh-review coverage plan, Tasks 5 and 7).
+
+    A round whose last fix commit is non-null (Metadata ``Last fix commit:
+    <sha>`` or sidecar ``last_fix_commit``) fails when it has neither a
+    populated ``### Witness ledger`` nor the Metadata empty-shape line
+    ``Witness ledger: N/A (no public mutators)``. The dedupe guard keeps the
+    Markdown-derived and sidecar-derived call sites from double-reporting
+    the same defect.
+    """
+    value = str(last_fix).strip() if last_fix is not None else ""
+    # r4 F1: the unified no-fix vocabulary (none/null/n/a) is absent, so a
+    # null-spelled Metadata line does not arm the witness gate either.
+    if not _last_fix_present(value):
+        return
+    if any("neither a populated '### Witness ledger'" in e for e in result.errors):
+        return
+    meta = _metadata_section(content)
+    has_na_line = bool(meta and WITNESS_LEDGER_NA_LINE_RE.search(meta))
+    if not _witness_ledger_populated(content) and not has_na_line:
+        result.add_error(
+            f"post-fix round ({source} last fix commit {value!r}) has neither "
+            "a populated '### Witness ledger' nor the Metadata 'Witness "
+            "ledger: N/A (no public mutators)' empty shape"
+        )
+
+
+def validate_release_gate_ledger(content: str, result: ValidationResult) -> None:
+    """Release-gate ledger field completeness (fresh-review coverage plan,
+    Tasks 5 and 7).
+
+    When a ``## Release-gate ledger`` section is present with content, every
+    ``classification:`` line must use the enum, and the section must carry
+    at least one valid classification value at all; a deferred boundary
+    recorded without its classification field fails. r3 F5: fence interiors
+    are excluded via the shared ``classify_fence_lines`` classifier, so a
+    fenced example classification bullet is quoted content, never gate
+    evidence.
+    """
+    sec = re.search(r"^## Release-gate ledger\s*$", content, re.MULTILINE)
+    if not sec:
+        return
+    body = re.split(r"\n## ", content[sec.end():], maxsplit=1)[0]
+    if not body.strip() or re.fullmatch(r"None\.?", body.strip()):
+        return
+    classification_line_re = re.compile(
+        r"^\s*-\s*\*{0,2}[Cc]lassification\*{0,2}\s*:\s*(.+?)\s*$"
+    )
+    # r1 F3: presence requires a real classification bullet (a line matching
+    # the classification-line regex with a valid enum value), not an enum
+    # phrase mentioned anywhere in the section body (prose mentions such as
+    # "treat as a non-blocking follow-up" must not suppress the missing
+    # classification error). r3 F5: only unfenced lines are candidates.
+    has_valid_classification = False
+    body_lines = body.splitlines()
+    events, _unclosed = classify_fence_lines(body_lines)
+    for idx, (kind, _value) in enumerate(events):
+        if kind not in ("ordinary", "heading"):
+            continue
+        line = body_lines[idx]
+        match = classification_line_re.match(line)
+        if not match:
+            continue
+        value = match.group(1).strip().rstrip(".")
+        if value not in VALID_RELEASE_GATE_CLASSIFICATIONS:
+            result.add_error(
+                f"Release-gate ledger classification {value!r} must be one "
+                f"of: {' | '.join(VALID_RELEASE_GATE_CLASSIFICATIONS)}"
+            )
+        else:
+            has_valid_classification = True
+    if not has_valid_classification:
+        result.add_error(
+            "Release-gate ledger section present but no entry carries a "
+            "classification line (expected one of: "
+            f"{' | '.join(VALID_RELEASE_GATE_CLASSIFICATIONS)})"
+        )
+
+
+def validate_declaration_consistency(
+    content: str, result: ValidationResult
+) -> None:
+    """Declaration-line contradiction checks (r3 O12).
+
+    The Metadata ``Witness ledger`` / ``Release-gate ledger`` declaration
+    lines are a second source of truth for their sections; a declaration
+    that contradicts the actual section state is a named error:
+
+    - a populated ``### Witness ledger`` section together with the Metadata
+      ``Witness ledger: N/A (no public mutators)`` line;
+    - a content-bearing ``## Release-gate ledger`` section together with
+      the Metadata ``Release-gate ledger: none`` line.
+    """
+    meta = _metadata_section(content)
+    if meta is None:
+        return
+    if WITNESS_LEDGER_NA_LINE_RE.search(meta) and _witness_ledger_populated(
+        content
+    ):
+        result.add_error(
+            "Metadata declares 'Witness ledger: N/A (no public mutators)' "
+            "but the doc carries a populated '### Witness ledger' section; "
+            "the declaration line and the section disagree"
+        )
+    if re.search(
+        r"^-[ \t]*Release-gate ledger[ \t]*:[ \t]*none[ \t]*$",
+        meta,
+        re.MULTILINE | re.IGNORECASE,
+    ):
+        sec = re.search(
+            r"^## Release-gate ledger\s*$", content, re.MULTILINE
+        )
+        if sec:
+            body = re.split(r"\n## ", content[sec.end():], maxsplit=1)[0]
+            if body.strip() and not re.fullmatch(r"None\.?", body.strip()):
+                result.add_error(
+                    "Metadata declares 'Release-gate ledger: none' but the "
+                    "doc carries a content-bearing '## Release-gate ledger' "
+                    "section; the declaration line and the section disagree"
+                )
+
+
+def metadata_allows_stats_skip(content: str) -> bool:
+    # r3 O14: delegates to the shared fence-aware ``_metadata_section``
+    # helper (single Metadata-heading grammar) instead of keeping a
+    # side-by-side raw heading parse.
+    meta = _metadata_section(content)
+    if meta is None:
+        return False
     return bool(
         re.search(
             r"Stats sidecar:\s*skipped\b",
-            tail,
+            meta,
             re.IGNORECASE,
         )
     )
@@ -909,7 +1468,11 @@ def _require_object(
 
 
 def validate_version1_payload(
-    payload: dict, content: str, result: ValidationResult
+    payload: dict,
+    content: str,
+    result: ValidationResult,
+    *,
+    staging_name: str | None = None,
 ) -> None:
     """Enforce the version-1 top-level contract and canonical Pattern IDs.
 
@@ -918,6 +1481,8 @@ def validate_version1_payload(
     allowlist (unknown fields rejected; ``extensions`` must be an object when
     present), canonical patterns for findings, overflow items, and discarded
     rows that carry a pattern, and Markdown/sidecar pattern conservation.
+    ``staging_name`` (the staging filename) feeds the r2 F3 dual-key
+    grandfather cross-check against the filename's leading date.
     """
     for field_name in V1_REQUIRED_TOP_LEVEL_FIELDS:
         if field_name not in payload:
@@ -1014,7 +1579,11 @@ def validate_version1_payload(
     # verdict, and null would blur absent-fallback semantics).
     if "verdict" in payload and payload["verdict"] not in VERDICT_VALUES:
         result.add_error("version-1 sidecar field 'verdict' must be 'yes' or 'no'")
-    allowed = set(V1_REQUIRED_TOP_LEVEL_FIELDS) | set(V1_OPTIONAL_TOP_LEVEL_FIELDS)
+    allowed = (
+        set(V1_REQUIRED_TOP_LEVEL_FIELDS)
+        | set(V1_OPTIONAL_TOP_LEVEL_FIELDS)
+        | set(V1_EXTENDED_REQUIRED_FIELDS)
+    )
     for key in payload:
         if key not in allowed:
             result.add_error(
@@ -1024,6 +1593,137 @@ def validate_version1_payload(
     if "extensions" in payload and not isinstance(payload["extensions"], dict):
         result.add_error(
             "version-1 sidecar 'extensions' must be an object when present"
+        )
+
+    # Extended freshness fields (fresh-review coverage plan, Task 3).
+    # Grandfathering: a version-1 record whose ``date`` string is EARLIER
+    # than EXTENDED_SIDECAR_MIN_DATE is accepted-legacy and exempt from the
+    # four extended fields; a missing or malformed ``date`` is never earlier
+    # (its own gates above already report it) and keeps the requirement.
+    date_value = payload.get("date")
+    extended_exempt = (
+        isinstance(date_value, str) and date_value < EXTENDED_SIDECAR_MIN_DATE
+    )
+    # r2 F3: the exemption is refused when the staging filename's leading
+    # date is on or after EXTENDED_SIDECAR_MIN_DATE while the sidecar
+    # ``date`` is earlier: the two fences of the same grandfathering concept
+    # must not be strippable by one mis-stamped (or backdated) producer-
+    # controlled date string. The Markdown twin of this fence keys on the
+    # filename date (validate_date_keyed_freshness_lines).
+    staging_name_date = (
+        re.match(r"(\d{4}-\d{2}-\d{2})", staging_name) if staging_name else None
+    )
+    if (
+        extended_exempt
+        and staging_name_date
+        and staging_name_date.group(1) >= EXTENDED_SIDECAR_MIN_DATE
+    ):
+        result.add_error(
+            f"version-1 sidecar dated {date_value!r} is earlier than "
+            f"EXTENDED_SIDECAR_MIN_DATE {EXTENDED_SIDECAR_MIN_DATE} while "
+            f"the staging filename is dated {staging_name_date.group(1)} "
+            "(on or after EXTENDED_SIDECAR_MIN_DATE); the grandfathering "
+            "exemption cannot be claimed by a backdated sidecar date"
+        )
+        extended_exempt = False
+    # r4 F7: the MIRRORED direction of the r2 F3 fence cross-check. When the
+    # staging filename's leading date parses and is BEFORE
+    # EXTENDED_SIDECAR_MIN_DATE while the sidecar ``date`` is on or after
+    # it, the two surfaces disagree about which side of the grandfathering
+    # fence the record sits on; a producer-controlled pre-fence filename
+    # must not shed the Markdown freshness obligations of a post-fence
+    # sidecar date.
+    if (
+        staging_name_date
+        and staging_name_date.group(1) < EXTENDED_SIDECAR_MIN_DATE
+        and isinstance(date_value, str)
+        and date_value >= EXTENDED_SIDECAR_MIN_DATE
+    ):
+        result.add_error(
+            f"date disagreement: staging filename dated "
+            f"{staging_name_date.group(1)} is earlier than "
+            f"EXTENDED_SIDECAR_MIN_DATE {EXTENDED_SIDECAR_MIN_DATE} while "
+            f"the sidecar date {date_value!r} is on or after it; the record "
+            "cannot be grandfathered on one surface and post-fence on the "
+            "other"
+        )
+    if not extended_exempt:
+        for field_name in V1_EXTENDED_REQUIRED_FIELDS:
+            if field_name not in payload:
+                result.add_error(
+                    f"version-1 sidecar dated {date_value!r} (on or after "
+                    f"EXTENDED_SIDECAR_MIN_DATE {EXTENDED_SIDECAR_MIN_DATE}) "
+                    f"is missing extended field {field_name!r}"
+                )
+    # r2 F6: only PRESENCE is gated on the date fence; the type, enum, and
+    # cross-field checks below run whenever a field is PRESENT, so a
+    # grandfathered-dated record voluntarily carrying the extended fields
+    # still gets its values validated.
+    review_mode = payload.get("review_mode")
+    if review_mode is not None and (
+        not isinstance(review_mode, str)
+        or review_mode not in VALID_REVIEW_MODES
+    ):
+        result.add_error(
+            "version-1 sidecar field 'review_mode' must be one of "
+            f"{sorted(VALID_REVIEW_MODES)}; got {review_mode!r}"
+        )
+    if "risk_signals" in payload and not isinstance(
+        payload["risk_signals"], list
+    ):
+        result.add_error(
+            "version-1 sidecar field 'risk_signals' must be a list"
+        )
+    # r3 F9: per-tag membership runs whenever the field is present (the
+    # presence-vs-value rule, mirroring review_mode above), so a tag
+    # outside the documented closed set fails even on grandfathered-dated
+    # records voluntarily carrying the field.
+    if isinstance(payload.get("risk_signals"), list):
+        for tag in payload["risk_signals"]:
+            if tag not in VALID_RISK_SIGNALS:
+                result.add_error(
+                    f"version-1 sidecar risk_signals tag {tag!r} must be "
+                    "one of the documented kebab-case signal tags: "
+                    f"{sorted(VALID_RISK_SIGNALS)}"
+                )
+    filter_value = payload.get("prior_findings_filter")
+    if filter_value is not None and not isinstance(filter_value, bool):
+        result.add_error(
+            "version-1 sidecar field 'prior_findings_filter' must be a "
+            "boolean"
+        )
+    elif filter_value is True and is_clean_verdict(content):
+        result.add_error(
+            "clean verdict with prior_findings_filter true: prior "
+            "findings are context, never a review filter, on a clean "
+            "round"
+        )
+    last_fix = payload.get("last_fix_commit")
+    if last_fix is not None and not isinstance(last_fix, str):
+        result.add_error(
+            "version-1 sidecar field 'last_fix_commit' must be a string "
+            "or null"
+        )
+    # Cross-field rule (review-staging SKILL.md, version-1 sidecar
+    # contract): a clean verdict with a non-null last_fix_commit
+    # requires review_mode 'fresh-adversarial'; a 'targeted' label on a
+    # post-fix clean round bypasses the fresh-adversarial mandate
+    # (fresh-review coverage plan, Tasks 3 and 7).
+    last_fix_present = (
+        isinstance(last_fix, str)
+        and last_fix.strip()
+        and last_fix.strip().lower() not in ABSENT_LAST_FIX_TOKENS
+    )
+    if (
+        last_fix_present
+        and is_clean_verdict(content)
+        and payload.get("review_mode") != "fresh-adversarial"
+    ):
+        result.add_error(
+            "clean verdict with non-null last_fix_commit requires "
+            "review_mode 'fresh-adversarial'; a "
+            f"{payload.get('review_mode')!r} label on a post-fix clean "
+            "round bypasses the fresh-adversarial mandate"
         )
     # Array/object-typed required fields: the targeted mistyped-container
     # errors are emitted by the shared ``_require_array`` / ``_require_object``
@@ -1128,6 +1828,13 @@ def validate_stats_sidecar(
         if key not in payload:
             result.add_warning(f"stats sidecar missing '{key}'")
     schema_class = classify_sidecar_schema(payload)
+    # Sidecar-driven witness gate twin (fresh-review coverage plan, Task 7):
+    # a non-null sidecar last_fix_commit makes the round post-fix for the
+    # witness-ledger shape check even when the Markdown Metadata line is
+    # absent; the helper's dedupe guard prevents double-reporting. r3 F8:
+    # the twin is scoped to the current-v1 schema class (inside that
+    # branch), so a legacy or unsupported payload with a stray string
+    # ``last_fix_commit`` is not held to a version-1-only staging gate.
     if schema_class == "unsupported":
         result.add_error(
             f"unsupported stats sidecar schema_version "
@@ -1135,7 +1842,71 @@ def validate_stats_sidecar(
             f"{list(SUPPORTED_SIDECAR_SCHEMA_VERSIONS)}"
         )
     elif schema_class == "current-v1":
-        validate_version1_payload(payload, content, result)
+        if isinstance(payload.get("last_fix_commit"), str):
+            validate_witness_ledger_shape(
+                content,
+                result,
+                last_fix=payload["last_fix_commit"],
+                source="sidecar",
+            )
+        validate_version1_payload(
+            payload, content, result, staging_name=staging_path.name
+        )
+
+    # r3 O16: cross-surface last-fix agreement. When BOTH the Metadata
+    # ``Last fix commit`` line and the sidecar ``last_fix_commit`` field
+    # are parsed and exactly one is a real sha while the other is
+    # none/null, the two surfaces disagree and the record fails.
+    if isinstance(payload, dict) and "last_fix_commit" in payload:
+        meta = _metadata_section(content)
+        md_last_fix = None
+        if meta is not None:
+            md_match = re.search(
+                r"^-[ \t]*Last fix commit[ \t]*:[ \t]*(.+?)[ \t]*$",
+                meta,
+                re.MULTILINE | re.IGNORECASE,
+            )
+            if md_match:
+                md_last_fix = md_match.group(1).strip()
+
+        # r4 F1: ``_last_fix_present`` (module level) treats
+        # case-insensitive none/null/n/a as ABSENT on both surfaces; the
+        # r3 O16 presence disagreement keeps its semantics (absent-vs-absent
+        # agrees, exactly-one-real disagrees) and its error now names the
+        # deviating surface. r4 F4: when BOTH surfaces carry real shas they
+        # must be equal (case-insensitive); two different real shas
+        # (stale Markdown copied forward, fresh sidecar) disagree.
+        if md_last_fix is not None:
+            sc_last_fix = payload.get("last_fix_commit")
+            sc_present = _last_fix_present(sc_last_fix)
+            md_present = _last_fix_present(md_last_fix)
+            if sc_present != md_present:
+                deviating = (
+                    "the Metadata 'Last fix commit' line carries the "
+                    "no-fix spelling while the sidecar sha is real"
+                    if not md_present
+                    else "the sidecar last_fix_commit field carries the "
+                    "no-fix spelling while the Metadata sha is real"
+                )
+                result.add_error(
+                    "last fix commit disagreement: Metadata 'Last fix "
+                    f"commit: {md_last_fix!r}' and sidecar "
+                    f"last_fix_commit {sc_last_fix!r} disagree "
+                    f"({deviating}); the two surfaces must agree"
+                )
+            elif (
+                sc_present
+                and md_present
+                and str(md_last_fix).strip().lower()
+                != str(sc_last_fix).strip().lower()
+            ):
+                result.add_error(
+                    "last fix commit disagreement: Metadata 'Last fix "
+                    f"commit: {md_last_fix!r}' and sidecar "
+                    f"last_fix_commit {sc_last_fix!r} disagree (both are "
+                    "real shas but name different commits); the two "
+                    "surfaces must agree"
+                )
     is_current = schema_class in CURRENT_SHAPE_LABELS
     if is_current:
         validate_current_payload(
@@ -1832,6 +2603,42 @@ def validate_staging_file(
             result.add_error("clear round still requires ## Review Statistics")
 
     validate_discarded_findings(content, result)
+    validate_freshness_metadata(content, result)
+    validate_verdict_heading_grammar(content, result)
+    # r3 F11: the dateless-filename fail-closed fence needs the sidecar
+    # date, read here best-effort (a missing or malformed sidecar reports
+    # through its own gates below).
+    sidecar_date = None
+    _sidecar_file = stats_sidecar_path(path)
+    if _sidecar_file.is_file():
+        try:
+            _sidecar_payload = json.loads(
+                _sidecar_file.read_text(encoding="utf-8")
+            )
+            if isinstance(_sidecar_payload, dict) and isinstance(
+                _sidecar_payload.get("date"), str
+            ):
+                sidecar_date = _sidecar_payload["date"]
+        except (OSError, json.JSONDecodeError):
+            sidecar_date = None
+    validate_date_keyed_freshness_lines(
+        path.name, content, result, sidecar_date=sidecar_date
+    )
+    md_last_fix = None
+    meta_for_last_fix = _metadata_section(content)
+    if meta_for_last_fix is not None:
+        last_fix_match = re.search(
+            r"^-[ \t]*Last fix commit[ \t]*:[ \t]*(.+?)[ \t]*$",
+            meta_for_last_fix,
+            re.MULTILINE | re.IGNORECASE,
+        )
+        if last_fix_match:
+            md_last_fix = last_fix_match.group(1)
+    validate_witness_ledger_shape(
+        content, result, last_fix=md_last_fix, source="Metadata"
+    )
+    validate_release_gate_ledger(content, result)
+    validate_declaration_consistency(content, result)
     validate_stats_sidecar(
         path,
         content,
@@ -5606,6 +6413,1691 @@ def _selftest_usage_optional(root: Path, check) -> None:
     )
 
 
+def _selftest_extended_sidecar_freshness(root: Path, check) -> None:
+    """Family: extended version-1 freshness fields and staging freshness
+    metadata (fresh-review coverage plan, Task 3).
+
+    RED-first family: the negative checks fail until the extended schema
+    (``review_mode`` / ``risk_signals`` / ``prior_findings_filter`` /
+    ``last_fix_commit`` with the ``EXTENDED_SIDECAR_MIN_DATE`` grandfathering
+    exemption) and the staging-metadata freshness gates are implemented."""
+    import json as _json
+
+    _freshness_label_re = re.compile(
+        r"^-[ \t]*(Review mode|Changed-risk signals|Prior findings supplied "
+        r"as filter|Last fix commit)[ \t]*:",
+        re.MULTILINE,
+    )
+
+    def clean_md(extra_meta: str = "", *, fresh_lines: bool = True) -> str:
+        md = _version1_markdown()
+        md = md.replace(
+            "1 Medium+ findings accepted for fix",
+            "0 unresolved blocking findings; clear round",
+        )
+        # r4 F7: the default staging filename date is post-fence, so the
+        # doc carries the four freshness lines by default; a label supplied
+        # in extra_meta (any colon spacing) suppresses its default line, and
+        # fresh_lines=False builds the stripped-Metadata shape for presence
+        # canaries.
+        block = extra_meta or ""
+        if fresh_lines:
+            supplied = set(_freshness_label_re.findall(extra_meta or ""))
+            default_lines = (
+                "- Review mode: fresh-adversarial",
+                "- Changed-risk signals: none",
+                "- Prior findings supplied as filter: no",
+                "- Last fix commit: none",
+            )
+            add = "\n".join(
+                line
+                for line in default_lines
+                if line.split(":", 1)[0].lstrip("-").strip() not in supplied
+            )
+            if add:
+                block = add + "\n" + block if block else add
+        if block:
+            md = md.replace(
+                "- Panel mode: full", f"- Panel mode: full\n{block}", 1
+            )
+        return md
+
+    def fresh_payload(date: str) -> dict:
+        payload = _version1_payload()
+        payload["date"] = date
+        payload["review_mode"] = "fresh-adversarial"
+        payload["risk_signals"] = []
+        payload["prior_findings_filter"] = False
+        payload["last_fix_commit"] = None
+        return payload
+
+    def bare_payload(date: str) -> dict:
+        payload = _version1_payload()
+        payload["date"] = date
+        return payload
+
+    def stage(
+        name: str,
+        payload: dict,
+        md: str,
+        filename_date: str = "2026-09-10",
+    ) -> Path:
+        # r4 F7: filename and sidecar dates must sit on the same side of
+        # EXTENDED_SIDECAR_MIN_DATE, so the default is the post-fence date;
+        # pre-fence grandfathering canaries pass explicit pre-fence dates on
+        # BOTH surfaces.
+        return _write_staging(
+            root,
+            f"{filename_date}-branch-review-fresh-{name}-r1.md",
+            md,
+            payload,
+        )
+
+    # Positive baseline: a clean fresh-adversarial round dated after
+    # EXTENDED_SIDECAR_MIN_DATE carrying all four extended fields passes hard.
+    check(
+        "freshness: clean fresh-adversarial round with all extended fields "
+        "passes hard",
+        validate_staging_file(
+            stage("ok", fresh_payload("2026-09-10"), clean_md()), hard=True
+        ).ok,
+    )
+
+    # Canary (a): Review mode verification-only on a clean verdict fails hard.
+    result = validate_staging_file(
+        stage(
+            "mode-verification-only",
+            fresh_payload("2026-09-10"),
+            clean_md("- Review mode: verification-only"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: clean verdict with Metadata Review mode verification-only "
+        "fails hard",
+        not result.ok
+        and any("verification-only" in e for e in result.errors),
+    )
+
+    # Canary (b): Prior findings supplied as filter yes on a clean verdict
+    # fails hard.
+    result = validate_staging_file(
+        stage(
+            "filter-yes",
+            fresh_payload("2026-09-10"),
+            clean_md("- Prior findings supplied as filter: yes"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: clean verdict with Metadata Prior findings supplied as "
+        "filter yes fails hard",
+        not result.ok
+        and any(
+            "Prior findings supplied as filter" in e for e in result.errors
+        ),
+    )
+
+    # Canary (c): a sidecar dated after EXTENDED_SIDECAR_MIN_DATE without the
+    # four extended fields fails the version-1 schema.
+    result = validate_staging_file(
+        stage("bare-after", bare_payload("2026-09-10"), clean_md()), hard=True
+    )
+    check(
+        "freshness: version-1 sidecar dated after EXTENDED_SIDECAR_MIN_DATE "
+        "without the extended fields fails hard",
+        not result.ok
+        and any("review_mode" in e for e in result.errors),
+    )
+
+    # Grandfathering: dated before EXTENDED_SIDECAR_MIN_DATE without the new
+    # fields is accepted-legacy and passes.
+    check(
+        "freshness: version-1 sidecar dated before EXTENDED_SIDECAR_MIN_DATE "
+        "without the extended fields passes (accepted-legacy)",
+        validate_staging_file(
+            stage(
+                "legacy-before",
+                bare_payload("2026-09-07"),
+                clean_md(),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # Grandfathering same-day shape: dated ON the implementing date
+    # (2026-09-08) without the new fields also passes.
+    check(
+        "freshness: version-1 sidecar dated 2026-09-08 (same-day shape) "
+        "without the new fields passes",
+        validate_staging_file(
+            stage(
+                "legacy-same-day",
+                bare_payload("2026-09-08"),
+                clean_md(),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # Boundary: the same bare shape dated ON EXTENDED_SIDECAR_MIN_DATE
+    # (2026-09-09, not earlier, so not exempt) fails.
+    result = validate_staging_file(
+        stage("bare-on-min", bare_payload("2026-09-09"), clean_md()), hard=True
+    )
+    check(
+        "freshness: same bare shape dated on EXTENDED_SIDECAR_MIN_DATE "
+        "(2026-09-09) fails the extended-field gate",
+        not result.ok
+        and any("review_mode" in e for e in result.errors),
+    )
+
+    # Mode enum membership: a non-enum review_mode value fails.
+    enum_payload = fresh_payload("2026-09-10")
+    enum_payload["review_mode"] = "quick-pass"
+    result = validate_staging_file(
+        stage("bad-mode", enum_payload, clean_md()), hard=True
+    )
+    check(
+        "freshness: version-1 sidecar review_mode outside the enum fails hard",
+        not result.ok
+        and any("review_mode" in e for e in result.errors),
+    )
+
+    # Sidecar filter twin: prior_findings_filter true on a clean verdict
+    # fails; the same value on a non-clean (findings accepted for fix) round
+    # stays legal, pinning the check's clean-verdict scoping.
+    filter_payload = fresh_payload("2026-09-10")
+    filter_payload["prior_findings_filter"] = True
+    result = validate_staging_file(
+        stage("filter-true-clean", filter_payload, clean_md()), hard=True
+    )
+    check(
+        "freshness: clean verdict with sidecar prior_findings_filter true "
+        "fails hard",
+        not result.ok
+        and any("prior_findings_filter" in e for e in result.errors),
+    )
+    unclean_payload = fresh_payload("2026-09-08")
+    unclean_payload["prior_findings_filter"] = True
+    check(
+        "freshness: prior_findings_filter true on a non-clean round passes "
+        "(clean-verdict scoping)",
+        validate_staging_file(
+            stage(
+                "filter-true-unclean",
+                unclean_payload,
+                _version1_markdown(),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r1 F4: a non-enum Metadata Review mode value (Markdown surface, not
+    # the sidecar) fails hard naming Review mode.
+    result = validate_staging_file(
+        stage(
+            "md-bad-mode",
+            fresh_payload("2026-09-10"),
+            clean_md("- Review mode: quick-pass"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: Metadata Review mode outside the enum fails hard naming "
+        "Review mode",
+        not result.ok
+        and any("Review mode" in e for e in result.errors),
+    )
+
+    # r1 F5: Markdown twin of the sidecar cross-field rule. Failing canary:
+    # a clean post-fix round (Metadata Last fix commit non-none) labeled
+    # targeted fails naming fresh-adversarial even with a conforming
+    # sidecar (sidecar last_fix_commit null keeps the sidecar rule silent,
+    # so only the Markdown twin can catch the bypass shape).
+    result = validate_staging_file(
+        stage(
+            "md-targeted-postfix",
+            fresh_payload("2026-09-10"),
+            clean_md(
+                "- Review mode: targeted\n"
+                "- Last fix commit: abc123def456\n"
+                "- Witness ledger: N/A (no public mutators)"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: clean verdict with Metadata Last fix commit and Review "
+        "mode targeted fails hard naming fresh-adversarial",
+        not result.ok
+        and any("fresh-adversarial" in e for e in result.errors),
+    )
+    # r1 F5 passing twin: a clean post-fix round with Review mode
+    # fresh-adversarial, a non-none Metadata Last fix commit, and the
+    # Witness ledger N/A empty shape passes hard.
+    postfix_ok_payload = fresh_payload("2026-09-10")
+    postfix_ok_payload["last_fix_commit"] = "abc123def456"
+    check(
+        "freshness: clean post-fix round with Review mode fresh-adversarial "
+        "and the Witness N/A line passes hard",
+        validate_staging_file(
+            stage(
+                "md-fresh-postfix-ok",
+                postfix_ok_payload,
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Changed-risk signals: none\n"
+                    "- Prior findings supplied as filter: no\n"
+                    "- Last fix commit: abc123def456\n"
+                    "- Witness ledger: N/A (no public mutators)"
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r1 F6: date-keyed Markdown freshness presence. Failing canary: a doc
+    # whose staging filename is dated on/after EXTENDED_SIDECAR_MIN_DATE
+    # without the four freshness Metadata lines fails naming the line.
+    result = validate_staging_file(
+        stage(
+            "no-freshness-lines-after",
+            fresh_payload("2026-09-10"),
+            clean_md(fresh_lines=False),
+            filename_date="2026-09-10",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: staging filename dated on/after EXTENDED_SIDECAR_MIN_DATE "
+        "without the freshness Metadata lines fails hard naming Review mode",
+        not result.ok
+        and any(
+            "missing freshness Metadata line 'Review mode'" in e
+            for e in result.errors
+        ),
+    )
+    # r1 F6 grandfathering: the same stripped doc under pre-MIN_DATE dates
+    # on BOTH surfaces (filename and sidecar, r4 F7) passes.
+    check(
+        "freshness: stripped doc under a pre-EXTENDED_SIDECAR_MIN_DATE "
+        "filename passes (grandfathered)",
+        validate_staging_file(
+            stage(
+                "no-freshness-lines-before",
+                fresh_payload("2026-09-08"),
+                clean_md(),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+    # r1 F6 passing shape: the post-MIN_DATE filename with all four
+    # freshness Metadata lines present passes hard.
+    check(
+        "freshness: staging filename dated on/after EXTENDED_SIDECAR_MIN_DATE "
+        "with the four freshness Metadata lines passes hard",
+        validate_staging_file(
+            stage(
+                "freshness-lines-after",
+                fresh_payload("2026-09-10"),
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Changed-risk signals: none\n"
+                    "- Prior findings supplied as filter: no\n"
+                    "- Last fix commit: none"
+                ),
+                filename_date="2026-09-10",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r1 F10: type-guard canaries for the extended sidecar fields. A
+    # non-list risk_signals fails naming risk_signals.
+    non_list_payload = fresh_payload("2026-09-10")
+    non_list_payload["risk_signals"] = "public-api"
+    result = validate_staging_file(
+        stage("risk-non-list", non_list_payload, clean_md()), hard=True
+    )
+    check(
+        "freshness: sidecar risk_signals as a non-list fails hard naming "
+        "risk_signals",
+        not result.ok
+        and any("risk_signals" in e for e in result.errors),
+    )
+    # r1 F10: a non-string last_fix_commit fails naming last_fix_commit.
+    non_str_payload = fresh_payload("2026-09-10")
+    non_str_payload["last_fix_commit"] = 42
+    result = validate_staging_file(
+        stage("lastfix-non-str", non_str_payload, clean_md()), hard=True
+    )
+    check(
+        "freshness: sidecar last_fix_commit as a non-string fails hard "
+        "naming last_fix_commit",
+        not result.ok
+        and any("last_fix_commit" in e for e in result.errors),
+    )
+
+    # r1 F12: the verbatim template placeholder line (multi-option list)
+    # fails hard naming Review mode instead of parsing as its first token.
+    result = validate_staging_file(
+        stage(
+            "md-template-placeholder",
+            fresh_payload("2026-09-10"),
+            clean_md(
+                "- Review mode: fresh-adversarial | targeted | "
+                "verification-only"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: verbatim template Review mode placeholder line fails "
+        "hard naming Review mode",
+        not result.ok
+        and any("Review mode" in e for e in result.errors),
+    )
+    # r1 F12: a '<...>'-delimited placeholder value also fails.
+    result = validate_staging_file(
+        stage(
+            "md-angle-placeholder",
+            fresh_payload("2026-09-10"),
+            clean_md("- Review mode: <mode>"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness: '<...>' Review mode placeholder value fails hard naming "
+        "Review mode",
+        not result.ok
+        and any("Review mode" in e for e in result.errors),
+    )
+
+    # r2 F2: duplicate freshness labels shadow their gates under
+    # first-match-wins parsing; a clean round carrying a second
+    # verification-only / filter-yes line must fail naming the duplicate
+    # check instead of passing on the first (conforming) line.
+    dup_md = clean_md(
+        "- Review mode: fresh-adversarial\n"
+        "- Review mode: verification-only\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Prior findings supplied as filter: yes\n"
+        "- Last fix commit: none"
+    )
+    result = validate_staging_file(
+        stage("duplicate-labels", fresh_payload("2026-09-10"), dup_md),
+        hard=True,
+    )
+    check(
+        "freshness (r2 F2): clean round with duplicate Review mode and "
+        "filter lines fails hard naming the duplicate-label check",
+        not result.ok
+        and any(
+            "duplicate freshness Metadata label 'Review mode'" in e
+            for e in result.errors
+        )
+        and any(
+            "duplicate freshness Metadata label 'Prior findings supplied "
+            "as filter'" in e
+            for e in result.errors
+        ),
+    )
+    check(
+        "freshness (r2 F2): exactly one line per gated label passes hard",
+        validate_staging_file(
+            stage(
+                "single-labels",
+                fresh_payload("2026-09-10"),
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Prior findings supplied as filter: no\n"
+                    "- Last fix commit: none"
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r2 F4: a space before the colon parses like the presence regex, so
+    # the spaced-colon clean post-fix targeted shape now fails naming
+    # fresh-adversarial (previously the value regexes never matched and the
+    # whole freshness suite false-greened).
+    result = validate_staging_file(
+        stage(
+            "spaced-colon-targeted",
+            fresh_payload("2026-09-10"),
+            clean_md(
+                "- Review mode : targeted\n"
+                "- Last fix commit : abc123def456\n"
+                "- Witness ledger: N/A (no public mutators)"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r2 F4): spaced-colon Review mode and Last fix commit "
+        "lines parse and the clean post-fix targeted shape fails hard "
+        "naming fresh-adversarial",
+        not result.ok
+        and any("fresh-adversarial" in e for e in result.errors),
+    )
+    # r2 O3: an empty Last fix commit value captures nothing (``[ \t]``
+    # cannot cross the line boundary onto the next Metadata bullet), so a
+    # clean targeted round with an empty last-fix line passes hard.
+    check(
+        "freshness (r2 O3): empty Last fix commit value does not capture "
+        "the next Metadata bullet and the round passes hard",
+        validate_staging_file(
+            stage(
+                "empty-lastfix",
+                fresh_payload("2026-09-10"),
+                clean_md(
+                    "- Review mode: targeted\n"
+                    "- Last fix commit:\n"
+                    "- Prior findings supplied as filter: no"
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r2 F3: the grandfathering exemption is refused when the staging
+    # filename is dated on/after EXTENDED_SIDECAR_MIN_DATE while the
+    # sidecar date is backdated earlier, even with the extended fields
+    # absent.
+    result = validate_staging_file(
+        stage(
+            "backdate-bypass",
+            bare_payload("2026-09-01"),
+            clean_md(),
+            filename_date="2026-09-10",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r2 F3): post-fence filename with a backdated sidecar "
+        "date fails hard naming EXTENDED_SIDECAR_MIN_DATE",
+        not result.ok
+        and any("EXTENDED_SIDECAR_MIN_DATE" in e for e in result.errors),
+    )
+    check(
+        "freshness (r2 F3): post-fence filename plus post-fence sidecar "
+        "without the extended fields still fails hard naming review_mode",
+        not validate_staging_file(
+            stage(
+                "post-post-bare",
+                bare_payload("2026-09-10"),
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Changed-risk signals: none\n"
+                    "- Prior findings supplied as filter: no\n"
+                    "- Last fix commit: none"
+                ),
+                filename_date="2026-09-10",
+            ),
+            hard=True,
+        ).ok,
+    )
+    check(
+        "freshness (r2 F3): post-fence filename plus conforming post-fence "
+        "sidecar and Metadata lines passes hard",
+        validate_staging_file(
+            stage(
+                "post-post-ok",
+                fresh_payload("2026-09-10"),
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Changed-risk signals: none\n"
+                    "- Prior findings supplied as filter: no\n"
+                    "- Last fix commit: none"
+                ),
+                filename_date="2026-09-10",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r2 F6: only presence is grandfather-fenced; a pre-MIN_DATE record
+    # voluntarily carrying a malformed review_mode still fails the value
+    # gate, while the same dated record without the fields keeps passing.
+    exempt_bogus = bare_payload("2026-09-07")
+    exempt_bogus["review_mode"] = "bogus"
+    result = validate_staging_file(
+        stage(
+            "exempt-bogus-mode",
+            exempt_bogus,
+            clean_md(),
+            filename_date="2026-09-08",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r2 F6): pre-MIN_DATE sidecar carrying review_mode "
+        "bogus fails hard naming review_mode",
+        not result.ok
+        and any("review_mode" in e for e in result.errors),
+    )
+    check(
+        "freshness (r2 F6): pre-MIN_DATE sidecar without the extended "
+        "fields still passes hard (presence-only fence)",
+        validate_staging_file(
+            stage(
+                "exempt-bare-pass",
+                bare_payload("2026-09-07"),
+                clean_md(),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r2 F8: without a verdict heading the round is not clean, so a quoted
+    # clear-round phrase cannot arm the clean-keyed contradiction rules.
+    no_verdict_md = clean_md(
+        "- Review mode: verification-only\n"
+        "- Prior findings supplied as filter: yes"
+    ).replace(
+        "## Verdict for this round (before fixes)",
+        "## Quoted prior verdict",
+    )
+    check(
+        "freshness (r2 F8): doc without a verdict heading is not clean even "
+        "with a quoted clear-round phrase and forbidden Metadata lines",
+        validate_staging_file(
+            stage(
+                "no-verdict-heading", fresh_payload("2026-09-10"), no_verdict_md
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r2 F9: a hyphen-separated clear verdict still classifies as clean, so
+    # verification-only Metadata on that round fails the contradiction gate.
+    hyphen_md = clean_md("- Review mode: verification-only").replace(
+        "0 unresolved blocking findings; clear round",
+        "0 unresolved blocking findings - clear round",
+    )
+    result = validate_staging_file(
+        stage("hyphen-verdict", fresh_payload("2026-09-10"), hyphen_md),
+        hard=True,
+    )
+    check(
+        "freshness (r2 F9): hyphen-separated clear verdict plus "
+        "verification-only Metadata fails hard naming verification-only",
+        not result.ok
+        and any("verification-only" in e for e in result.errors),
+    )
+
+    # r3 F2: comma- and period-separated clear verdicts still classify as
+    # clean, so verification-only Metadata on those rounds fails the
+    # contradiction gate (the r2 separator widening was half-closed).
+    for _sep_name, _sep in (("comma", ","), ("period", ".")):
+        sep_md = clean_md("- Review mode: verification-only").replace(
+            "0 unresolved blocking findings; clear round",
+            f"0 unresolved blocking findings{_sep} clear round",
+        )
+        result = validate_staging_file(
+            stage(f"sep-verdict-{_sep_name}", fresh_payload("2026-09-10"), sep_md),
+            hard=True,
+        )
+        check(
+            f"freshness (r3 F2): {_sep_name}-separated clear verdict plus "
+            "verification-only Metadata fails hard naming verification-only",
+            not result.ok
+            and any("verification-only" in e for e in result.errors),
+        )
+
+    # r3 F3 canary (a): a fenced template copy of the Metadata block (with
+    # all four freshness lines) before a real Metadata section that omits
+    # them does not satisfy the post-fence presence gate.
+    fenced_template = (
+        "```markdown\n"
+        "## Metadata\n"
+        "- Review mode: fresh-adversarial\n"
+        "- Changed-risk signals: none\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Last fix commit: none\n"
+        "```\n"
+    )
+    fenced_only_md = clean_md(fresh_lines=False).replace(
+        "## Metadata", fenced_template + "## Metadata", 1
+    )
+    result = validate_staging_file(
+        stage(
+            "fenced-template-only",
+            fresh_payload("2026-09-10"),
+            fenced_only_md,
+            filename_date="2026-09-10",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F3): fenced Metadata template copy does not satisfy "
+        "the post-fence presence gate; the real section without the four "
+        "lines fails hard naming the missing line",
+        not result.ok
+        and any(
+            "missing freshness Metadata line 'Review mode'" in e
+            for e in result.errors
+        ),
+    )
+
+    # r3 F3 canary (b): a fenced 'Review mode: fresh-adversarial' copy must
+    # not mask the real 'Review mode: targeted' value on a clean post-fix
+    # round (first-match-wins previously latched onto the fenced copy).
+    fenced_mode_md = clean_md(
+        "- Review mode: targeted\n"
+        "- Last fix commit: abc123def456\n"
+        "- Witness ledger: N/A (no public mutators)"
+    ).replace(
+        "## Metadata",
+        "```markdown\n- Review mode: fresh-adversarial\n```\n## Metadata",
+        1,
+    )
+    result = validate_staging_file(
+        stage("fenced-mode-copy", fresh_payload("2026-09-10"), fenced_mode_md),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F3): fenced fresh-adversarial copy does not mask the "
+        "real targeted mode on a clean post-fix round; fails hard naming "
+        "fresh-adversarial",
+        not result.ok
+        and any("fresh-adversarial" in e for e in result.errors),
+    )
+
+    # r3 F3 canary (c): quoting the freshness lines in a fenced Metadata
+    # example next to one real copy per label is not a duplicate-label
+    # error, and the real lines satisfy the post-fence presence gate.
+    fenced_quote_md = clean_md(
+        "- Review mode: fresh-adversarial\n"
+        "- Changed-risk signals: none\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Last fix commit: none"
+    ).replace(
+        "## Metadata",
+        "```markdown\n"
+        "- Review mode: fresh-adversarial | targeted | verification-only\n"
+        "- Changed-risk signals: <comma list or none>\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Last fix commit: <sha or none>\n"
+        "```\n## Metadata",
+        1,
+    )
+    check(
+        "freshness (r3 F3): fenced freshness-line example does not trigger "
+        "the duplicate-label error and the round passes hard",
+        validate_staging_file(
+            stage(
+                "fenced-quote-ok",
+                fresh_payload("2026-09-10"),
+                fenced_quote_md,
+                filename_date="2026-09-10",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r3 F7: a multi-line '- Review mode' newline ': targeted' shape does
+    # not satisfy the presence gate ([ \t]* grammar, never \s*).
+    multiline_md = clean_md(
+        "- Review mode\n"
+        ": targeted\n"
+        "- Changed-risk signals: none\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Last fix commit: none",
+        fresh_lines=False,
+    )
+    result = validate_staging_file(
+        stage(
+            "multiline-label",
+            fresh_payload("2026-09-10"),
+            multiline_md,
+            filename_date="2026-09-10",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F7): multi-line label shape does not satisfy the "
+        "presence gate; the post-fence doc fails hard naming Review mode",
+        not result.ok
+        and any(
+            "missing freshness Metadata line 'Review mode'" in e
+            for e in result.errors
+        ),
+    )
+
+    # r3 F10: a punctuated filter-yes value ('yes,') fails the clean-verdict
+    # contradiction rule after trailing-punctuation stripping.
+    result = validate_staging_file(
+        stage(
+            "filter-yes-punctuated",
+            fresh_payload("2026-09-10"),
+            clean_md("- Prior findings supplied as filter: yes,"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F10): clean round with punctuated filter-yes fails "
+        "hard naming the contradiction",
+        not result.ok
+        and any(
+            "Prior findings supplied as" in e for e in result.errors
+        ),
+    )
+
+    # r3 F11: a dateless staging filename with a post-fence sidecar date
+    # fails closed demanding the conventional dated filename; the same
+    # dateless shape with a pre-fence sidecar date stays grandfathered.
+    dateless_md = clean_md(
+        "- Review mode: fresh-adversarial\n"
+        "- Changed-risk signals: none\n"
+        "- Prior findings supplied as filter: no\n"
+        "- Last fix commit: none"
+    )
+    result = validate_staging_file(
+        _write_staging(
+            root,
+            "branch-review-fresh-dateless-post-r3.md",
+            dateless_md,
+            fresh_payload("2026-09-10"),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F11): dateless filename with a post-fence sidecar "
+        "date fails hard naming the conventional dated filename",
+        not result.ok
+        and any(
+            "no leading YYYY-MM-DD date" in e for e in result.errors
+        ),
+    )
+    check(
+        "freshness (r3 F11): dateless filename with a pre-fence sidecar "
+        "date passes hard (grandfathered)",
+        validate_staging_file(
+            _write_staging(
+                root,
+                "branch-review-fresh-dateless-pre-r3.md",
+                dateless_md,
+                fresh_payload("2026-09-07"),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r3 F8: the sidecar witness twin is scoped to the current-v1 schema
+    # class; a pure-legacy payload with a stray string last_fix_commit does
+    # not collect the version-1 witness error (and still validates as
+    # legacy), while a current-v1 post-fix payload without the witness
+    # shape still fails the gate.
+    check(
+        "freshness (r3 F8): legacy payload with a stray last_fix_commit "
+        "does not collect the witness error and validates as legacy",
+        validate_staging_file(
+            _write_staging(
+                root,
+                "2026-09-08-branch-review-fresh-legacy-stray-r3.md",
+                clean_md(fresh_lines=False),
+                {"last_fix_commit": "deadbeef00"},
+            ),
+            hard=True,
+        ).ok,
+    )
+    v1_postfix_payload = fresh_payload("2026-09-10")
+    v1_postfix_payload["last_fix_commit"] = "abc123def456"
+    result = validate_staging_file(
+        stage(
+            "v1-postfix-nowitness",
+            v1_postfix_payload,
+            clean_md(
+                "- Review mode: fresh-adversarial\n"
+                "- Last fix commit: abc123def456"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 F8): current-v1 post-fix payload without the "
+        "witness shape still fails hard naming the witness gate",
+        not result.ok
+        and any("Witness ledger" in e for e in result.errors),
+    )
+
+    # r3 F9: sidecar risk_signals per-tag membership; an off-vocabulary
+    # tag fails naming risk_signals, the five documented tags pass.
+    camel_payload = fresh_payload("2026-09-10")
+    camel_payload["risk_signals"] = ["publicAPI"]
+    result = validate_staging_file(
+        stage("risk-camel-tag", camel_payload, clean_md()), hard=True
+    )
+    check(
+        "freshness (r3 F9): risk_signals tag outside the documented set "
+        "fails hard naming risk_signals",
+        not result.ok
+        and any("risk_signals" in e for e in result.errors),
+    )
+    all_tags_payload = fresh_payload("2026-09-10")
+    all_tags_payload["risk_signals"] = sorted(VALID_RISK_SIGNALS)
+    check(
+        "freshness (r3 F9): the five documented risk_signals tags pass hard",
+        validate_staging_file(
+            stage("risk-all-tags", all_tags_payload, clean_md()), hard=True
+        ).ok,
+    )
+
+    # r3 O16: cross-surface last-fix agreement. Exactly-one-real-sha
+    # disagreement fails naming the disagreement; both-none and both-real
+    # twins pass.
+    disagree_payload = fresh_payload("2026-09-10")
+    disagree_payload["last_fix_commit"] = "abc123def456"
+    result = validate_staging_file(
+        stage(
+            "lastfix-disagree",
+            disagree_payload,
+            clean_md(
+                "- Review mode: fresh-adversarial\n"
+                "- Last fix commit: none"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r3 O16): Metadata Last fix commit none against a real "
+        "sidecar sha fails hard naming the disagreement",
+        not result.ok
+        and any("disagreement" in e for e in result.errors),
+    )
+    agree_none_payload = fresh_payload("2026-09-10")
+    agree_none_payload["last_fix_commit"] = None
+    check(
+        "freshness (r3 O16): both surfaces none (explicit) pass hard",
+        validate_staging_file(
+            stage(
+                "lastfix-both-none",
+                agree_none_payload,
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Last fix commit: none"
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+    agree_both_payload = fresh_payload("2026-09-10")
+    agree_both_payload["last_fix_commit"] = "abc123def456"
+    check(
+        "freshness (r3 O16): both surfaces real shas pass hard",
+        validate_staging_file(
+            stage(
+                "lastfix-both-real",
+                agree_both_payload,
+                clean_md(
+                    "- Review mode: fresh-adversarial\n"
+                    "- Last fix commit: abc123def456\n"
+                    "- Witness ledger: N/A (no public mutators)"
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r4 F1: the no-fix vocabulary is unified across surfaces. Canary (a):
+    # a null-spelled Metadata line against a JSON-null sidecar on a
+    # grandfathered-dated record (both surfaces 2026-09-08) is
+    # absent-vs-absent and passes hard with no disagreement error.
+    null_agree_payload = fresh_payload("2026-09-08")
+    null_agree_payload["last_fix_commit"] = None
+    check(
+        "freshness (r4 F1): Metadata 'Last fix commit: null' with a "
+        "JSON-null sidecar on a grandfathered date passes hard (absent "
+        "agrees with absent)",
+        validate_staging_file(
+            stage(
+                "lastfix-null-agrees",
+                null_agree_payload,
+                clean_md("- Last fix commit: null", fresh_lines=False),
+                filename_date="2026-09-08",
+            ),
+            hard=True,
+        ).ok,
+    )
+    # r4 F1 canary (b): a none-spelled Metadata line against a real sidecar
+    # sha still fails as a disagreement naming the Metadata surface.
+    result = validate_staging_file(
+        stage(
+            "lastfix-none-vs-real",
+            disagree_payload,
+            clean_md(
+                "- Review mode: fresh-adversarial\n"
+                "- Last fix commit: none\n"
+                "- Witness ledger: N/A (no public mutators)"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r4 F1): Metadata none against a real sidecar sha fails "
+        "hard naming the disagreement and the Metadata surface",
+        not result.ok
+        and any(
+            "last fix commit disagreement" in e
+            and "Metadata 'Last fix commit' line carries the no-fix spelling"
+            in e
+            for e in result.errors
+        ),
+    )
+
+    # r4 F4: when BOTH surfaces carry real shas they must be equal
+    # (case-insensitive); two different real shas disagree.
+    both_diff_payload = fresh_payload("2026-09-10")
+    both_diff_payload["last_fix_commit"] = "abc123def456"
+    result = validate_staging_file(
+        stage(
+            "lastfix-both-real-differ",
+            both_diff_payload,
+            clean_md(
+                "- Review mode: fresh-adversarial\n"
+                "- Last fix commit: deadbeef00\n"
+                "- Witness ledger: N/A (no public mutators)"
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r4 F4): both surfaces real shas naming different "
+        "commits fails hard naming the disagreement",
+        not result.ok
+        and any(
+            "last fix commit disagreement" in e for e in result.errors
+        ),
+    )
+
+    # r4 F3: verdict heading grammar drift. A present-but-rephrased
+    # `## Verdict`-prefixed level-2 heading plus verification-only Metadata
+    # fails hard with the named heading error (pre-fix the rephrased
+    # heading disarmed the contradiction gate); the canonical-heading twin
+    # stays clean.
+    drift_md = clean_md("- Review mode: verification-only").replace(
+        "## Verdict for this round (before fixes)",
+        "## Verdict for this round",
+    )
+    result = validate_staging_file(
+        stage("verdict-heading-drift", fresh_payload("2026-09-10"), drift_md),
+        hard=True,
+    )
+    check(
+        "freshness (r4 F3): rephrased verdict heading with verification-only "
+        "Metadata fails hard naming the verdict heading grammar drift",
+        not result.ok
+        and any(
+            "verdict heading grammar drift" in e for e in result.errors
+        ),
+    )
+    check(
+        "freshness (r4 F3): canonical verdict heading twin passes hard",
+        validate_staging_file(
+            stage(
+                "verdict-heading-canonical",
+                fresh_payload("2026-09-10"),
+                clean_md(),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r4 F6: wrapped filter-yes shapes fail the clean-verdict contradiction
+    # after quote/bracket normalization; a wrapped `no` twin passes.
+    for _wrap_name, _wrapped in (
+        ("quoted", '"yes"'),
+        ("parenthesized", "(yes)"),
+    ):
+        result = validate_staging_file(
+            stage(
+                f"filter-yes-wrapped-{_wrap_name}",
+                fresh_payload("2026-09-10"),
+                clean_md(
+                    f"- Prior findings supplied as filter: {_wrapped}"
+                ),
+            ),
+            hard=True,
+        )
+        check(
+            f"freshness (r4 F6): {_wrap_name} filter-yes fails hard naming "
+            "the contradiction",
+            not result.ok
+            and any(
+                "Prior findings supplied as" in e for e in result.errors
+            ),
+        )
+    check(
+        "freshness (r4 F6): parenthesized filter-no twin passes hard",
+        validate_staging_file(
+            stage(
+                "filter-no-wrapped",
+                fresh_payload("2026-09-10"),
+                clean_md("- Prior findings supplied as filter: (no)"),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # r4 F7: the mirrored date-fence disagreement. A pre-fence filename with
+    # a post-fence sidecar date and stripped Metadata fails hard naming the
+    # date disagreement; agreeing pre-fence dates still grandfather (pinned
+    # above by the legacy-before canary).
+    result = validate_staging_file(
+        stage(
+            "old-filename-post-fence-sidecar",
+            fresh_payload("2026-09-10"),
+            clean_md(fresh_lines=False),
+            filename_date="2026-09-07",
+        ),
+        hard=True,
+    )
+    check(
+        "freshness (r4 F7): pre-fence filename with a post-fence sidecar "
+        "date and stripped Metadata fails hard naming the date disagreement",
+        not result.ok
+        and any(
+            "date disagreement" in e
+            and "EXTENDED_SIDECAR_MIN_DATE" in e
+            for e in result.errors
+        ),
+    )
+    check(
+        "freshness (r4 F7): agreeing pre-fence dates still grandfather and "
+        "pass hard",
+        validate_staging_file(
+            stage(
+                "prefence-agreeing",
+                bare_payload("2026-09-07"),
+                clean_md(fresh_lines=False),
+                filename_date="2026-09-07",
+            ),
+            hard=True,
+        ).ok,
+    )
+
+
+# Incident-coverage mapping (fresh-review coverage plan, Task 7): the
+# sibling-defect re-scan and the test-name-only matrix row are workflow
+# obligations enforced by the execute-plan Task 1 fresh-adversarial prose
+# gate and the Task 4 witness quality bar, not by this validator.
+def _selftest_incident_shapes(root: Path, check) -> None:
+    """Family: the six incident shapes mechanically decidable by the
+    validator (fresh-review coverage plan, Task 7).
+
+    Canaries (3), (4), and (6) deliberately re-pin Task 3's interim RED
+    canaries (b), (a), and (c) inside the complete six-shape suite, so the
+    exit suite pins them even if the Task 3 family is later reorganized."""
+    full_meta = (
+        "- Review mode: fresh-adversarial",
+        "- Changed-risk signals: none",
+        "- Prior findings supplied as filter: no",
+        "- Last fix commit: abc123def456",
+        "- Witness ledger: populated",
+        "- Release-gate ledger: rows",
+    )
+    witness_section = "\n".join(
+        [
+            "### Witness ledger",
+            "| Mutator / boundary | Input partitions | Transformation | Wire boundary & serializer | Downstream outcomes | Mode & deployed default | Doc examples | Discriminating assertion |",
+            "|--------------------|------------------|-----------------|----------------------------|---------------------|-------------------------|--------------|---------------------------|",
+            "| updateItem | absent, explicit-null, valid, invalid | original input index preserved on surviving items | items JSON API, default serializer | success, partial-failure, malformed-response, no-call | rollout mode=strict, deployed default strict | example 3 in the staging contract | surviving item carries its original input index, not list position |",
+        ]
+    )
+    release_gate_body = "\n".join(
+        [
+            "- missing capability: boundary protection explicitly assigned to a later task; owner: later task owner",
+            "- unsafe path today: unguarded downstream call under the permissive compatibility mode",
+            "- permitted deployment before completion: feature-flagged rollout only",
+            "- shippable when: the boundary check is enforced and covered by tests",
+            "- classification: release blocker owned elsewhere",
+        ]
+    )
+
+    def shape_payload(**overrides) -> dict:
+        payload = _version1_payload()
+        payload.update(
+            {
+                "date": "2026-09-10",
+                "review_mode": "fresh-adversarial",
+                "risk_signals": [],
+                "prior_findings_filter": False,
+                "last_fix_commit": None,
+            }
+        )
+        payload.update(overrides)
+        return payload
+
+    def shape_md(
+        meta_lines: tuple[str, ...] = full_meta,
+        *,
+        witness: str = "",
+        release_gate: str = "",
+    ) -> str:
+        md = _version1_markdown()
+        md = md.replace(
+            "1 Medium+ findings accepted for fix",
+            "0 unresolved blocking findings; clear round",
+        )
+        if meta_lines:
+            md = md.replace(
+                "- Panel mode: full",
+                "- Panel mode: full\n" + "\n".join(meta_lines),
+                1,
+            )
+        if witness:
+            md = md.replace(
+                "### Triage outcomes\nPending triage.",
+                "### Triage outcomes\nPending triage.\n" + witness,
+                1,
+            )
+        if release_gate:
+            md = md.replace(
+                "## Verdict for this round (before fixes)",
+                "## Release-gate ledger\n"
+                + release_gate
+                + "\n\n## Verdict for this round (before fixes)",
+                1,
+            )
+        return md
+
+    def stage(name: str, payload: dict, md: str) -> Path:
+        # r4 F7: the filename date must agree with the payload's post-fence
+        # 2026-09-10 sidecar date (both surfaces on the same fence side).
+        return _write_staging(
+            root, f"2026-09-10-branch-review-incident-{name}-r1.md", md, payload
+        )
+
+    # Shape (1): a fresh-adversarial post-fix round with all ledgers and
+    # filter no passes hard.
+    check(
+        "incident shape 1: fresh-adversarial round with all ledgers and "
+        "filter no passes hard",
+        validate_staging_file(
+            stage(
+                "shape1",
+                shape_payload(last_fix_commit="abc123def456"),
+                shape_md(witness=witness_section, release_gate=release_gate_body),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # Shape (2): a post-fix round with neither a populated Witness ledger
+    # nor the Metadata N/A empty shape fails, naming the witness gate.
+    result = validate_staging_file(
+        stage(
+            "shape2",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Witness ledger")
+                )
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 2: post-fix round without either Witness ledger "
+        "shape fails hard naming the witness gate",
+        not result.ok and any("Witness ledger" in e for e in result.errors),
+    )
+    # Shape (2) empty-shape twin: the Metadata N/A line satisfies the gate.
+    check(
+        "incident shape 2: post-fix round with the Witness ledger N/A "
+        "Metadata line passes hard",
+        validate_staging_file(
+            stage(
+                "shape2-na",
+                shape_payload(last_fix_commit="abc123def456"),
+                shape_md(
+                    tuple(
+                        "- Witness ledger: N/A (no public mutators)"
+                        if line.startswith("- Witness ledger")
+                        else line
+                        for line in full_meta
+                    )
+                ),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+    # Shape (3) (re-pins Task 3 canary (b)): a clean verdict with sidecar
+    # prior_findings_filter true fails, naming the field.
+    filter_payload = shape_payload(prior_findings_filter=True)
+    result = validate_staging_file(
+        stage("shape3", filter_payload, shape_md()), hard=True
+    )
+    check(
+        "incident shape 3: clean verdict with prior_findings_filter true "
+        "fails hard naming prior_findings_filter",
+        not result.ok
+        and any("prior_findings_filter" in e for e in result.errors),
+    )
+
+    # Shape (4) (re-pins Task 3 canary (a)): a clean verdict with
+    # review_mode verification-only fails, naming the mode.
+    result = validate_staging_file(
+        stage(
+            "shape4",
+            shape_payload(review_mode="verification-only"),
+            shape_md(
+                ("- Review mode: verification-only",)
+                + tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Review mode")
+                )
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 4: clean verdict with review_mode verification-only "
+        "fails hard naming verification-only",
+        not result.ok
+        and any("verification-only" in e for e in result.errors),
+    )
+
+    # Shape (4b): a clean verdict with non-null last_fix_commit and
+    # review_mode targeted fails the fresh-adversarial cross-field rule.
+    result = validate_staging_file(
+        stage(
+            "shape4b",
+            shape_payload(review_mode="targeted", last_fix_commit="abc123def456"),
+            shape_md(
+                (
+                    "- Review mode: targeted",
+                    "- Witness ledger: N/A (no public mutators)",
+                )
+                + tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith(("- Review mode", "- Witness ledger"))
+                )
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 4b: clean verdict with non-null last_fix_commit and "
+        "review_mode targeted fails hard naming fresh-adversarial",
+        not result.ok
+        and any("fresh-adversarial" in e for e in result.errors),
+    )
+
+    # Shape (5): a Release-gate ledger section with a missing classification
+    # field fails, naming the classification gate; an out-of-enum value also
+    # fails; every valid enum value passes.
+    no_classification = "\n".join(
+        line
+        for line in release_gate_body.splitlines()
+        if "classification" not in line
+    )
+    result = validate_staging_file(
+        stage(
+            "shape5",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(witness=witness_section, release_gate=no_classification),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 5: Release-gate ledger with a missing classification "
+        "fails hard naming the classification gate",
+        not result.ok
+        and any("classification" in e for e in result.errors),
+    )
+    bad_class = release_gate_body.replace(
+        "- classification: release blocker owned elsewhere",
+        "- classification: maybe later",
+    )
+    result = validate_staging_file(
+        stage(
+            "shape5-bad-enum",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(witness=witness_section, release_gate=bad_class),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 5: Release-gate ledger classification outside the "
+        "enum fails hard",
+        not result.ok
+        and any("classification" in e for e in result.errors),
+    )
+    for value in VALID_RELEASE_GATE_CLASSIFICATIONS:
+        check(
+            f"incident shape 5: Release-gate ledger classification "
+            f"{value!r} passes hard",
+            validate_staging_file(
+                stage(
+                    "shape5-enum-"
+                    + value.replace(" ", "-").replace("-owned-", "-"),
+                    shape_payload(last_fix_commit="abc123def456"),
+                    shape_md(
+                        witness=witness_section,
+                        release_gate=release_gate_body.replace(
+                            "- classification: release blocker owned elsewhere",
+                            f"- classification: {value}",
+                        ),
+                    ),
+                ),
+                hard=True,
+            ).ok,
+        )
+
+    # Shape (6) (re-pins Task 3 canary (c)): a sidecar missing risk_signals
+    # fails the version-1 extended schema, naming the field.
+    missing_risk = shape_payload()
+    del missing_risk["risk_signals"]
+    result = validate_staging_file(
+        stage("shape6", missing_risk, shape_md()), hard=True
+    )
+    check(
+        "incident shape 6: sidecar missing risk_signals fails the version-1 "
+        "extended schema naming risk_signals",
+        not result.ok and any("risk_signals" in e for e in result.errors),
+    )
+
+    # r1 F3: a section body that mentions an enum phrase in prose but
+    # carries no classification line FAILS the classification gate (the
+    # old whole-section substring match false-greened this shape).
+    prose_only = "\n".join(
+        [
+            "- missing capability: boundary protection explicitly assigned "
+            "to a later task; owner: later task owner",
+            "- note: the team treats this boundary as a non-blocking "
+            "follow-up after the next release",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape5-prose-only",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(witness=witness_section, release_gate=prose_only),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 5 (r1 F3): enum phrase mentioned only in prose with "
+        "no classification line fails hard naming the classification gate",
+        not result.ok
+        and any(
+            "no entry carries a classification" in e for e in result.errors
+        ),
+    )
+
+    # r1 F9: a header-only Witness table with NON-canonical column titles
+    # (any pipe row followed by a separator row is a header) does not count
+    # as populated; the post-fix round without the N/A line fails naming
+    # the witness gate.
+    witness_header_only = "\n".join(
+        [
+            "### Witness ledger",
+            "| Boundary | Assertion |",
+            "|-----------|------------|",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape2-header-only",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Witness ledger")
+                ),
+                witness=witness_header_only,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 2 (r1 F9): header-only Witness table with "
+        "non-canonical titles fails the populated check on a post-fix round",
+        not result.ok and any("Witness ledger" in e for e in result.errors),
+    )
+
+    # r2 F5: a witness table whose only data row is the verbatim
+    # template placeholder row (<...> first cell) is quoted example, not
+    # recorded evidence; the post-fix round without the N/A line fails
+    # naming the witness gate.
+    witness_placeholder_only = "\n".join(
+        [
+            "### Witness ledger",
+            "| Mutator / boundary | Assertion |",
+            "|-------------------|------------|",
+            "| <mutator or boundary> | <discriminating assertion> |",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape2-placeholder-only",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Witness ledger")
+                ),
+                witness=witness_placeholder_only,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 2 (r2 F5): template-placeholder-row-only Witness "
+        "table fails the populated check on a post-fix round",
+        not result.ok and any("Witness ledger" in e for e in result.errors),
+    )
+
+    # r2 F7: a fenced example table under the Witness ledger heading is
+    # quoted content, not a populated ledger; the post-fix round without
+    # the N/A line fails naming the witness gate. A real unfenced data row
+    # still passes (incident shape 1 above pins that direction).
+    witness_fenced = "\n".join(
+        [
+            "### Witness ledger",
+            "```markdown",
+            "| Mutator / boundary | Assertion |",
+            "|-------------------|------------|",
+            "| updateItem | surviving item carries its original input index |",
+            "```",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape2-fenced-example",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Witness ledger")
+                ),
+                witness=witness_fenced,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 2 (r2 F7): fenced example Witness table fails the "
+        "populated check on a post-fix round",
+        not result.ok and any("Witness ledger" in e for e in result.errors),
+    )
+
+    # r3 F5: a classification bullet inside a fenced example is quoted
+    # content, not gate evidence; the section without a real classification
+    # bullet fails naming the classification gate (the shape5 enum pass
+    # above pins the real-bullet passing twin).
+    fenced_classification = "\n".join(
+        [
+            "- missing capability: boundary protection explicitly assigned "
+            "to a later task; owner: later task owner",
+            "```markdown",
+            "- classification: release blocker owned elsewhere",
+            "```",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape5-fenced-classification",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(witness=witness_section, release_gate=fenced_classification),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 5 (r3 F5): fenced classification bullet does not "
+        "satisfy the classification gate; the section fails hard naming "
+        "the missing classification",
+        not result.ok
+        and any(
+            "no entry carries a classification" in e for e in result.errors
+        ),
+    )
+
+    # r3 O12 (a): a populated Witness ledger section together with the
+    # Metadata 'Witness ledger: N/A (no public mutators)' declaration line
+    # fails naming the contradiction (shape 1 pins the passing twin: a
+    # populated section with its non-N/A declaration).
+    result = validate_staging_file(
+        stage(
+            "witness-declaration-contradiction",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    "- Witness ledger: N/A (no public mutators)"
+                    if line.startswith("- Witness ledger")
+                    else line
+                    for line in full_meta
+                ),
+                witness=witness_section,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident (r3 O12): populated Witness section plus the Metadata "
+        "N/A declaration line fails hard naming the contradiction",
+        not result.ok
+        and any(
+            "the declaration line and the section disagree" in e
+            for e in result.errors
+        ),
+    )
+
+    # r3 O12 (b): a content-bearing Release-gate ledger section together
+    # with the Metadata 'Release-gate ledger: none' declaration line fails
+    # naming the contradiction (shape 1 pins the passing twin: a content-
+    # bearing section with a rows declaration).
+    result = validate_staging_file(
+        stage(
+            "release-gate-declaration-contradiction",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    "- Release-gate ledger: none"
+                    if line.startswith("- Release-gate ledger")
+                    else line
+                    for line in full_meta
+                ),
+                witness=witness_section,
+                release_gate=release_gate_body,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident (r3 O12): content-bearing Release-gate section plus the "
+        "Metadata none declaration line fails hard naming the contradiction",
+        not result.ok
+        and any(
+            "the declaration line and the section disagree" in e
+            for e in result.errors
+        ),
+    )
+
+    # r4 F2: the witness section body ends at any heading of level 3 or
+    # shallower. A bare `### Witness ledger` (zero rows) followed by a
+    # `## Findings`-level heading with a pipe table before the first
+    # severity heading must NOT count as populated; the post-fix round
+    # fails the witness gate. Passing twin: a real witness row still counts
+    # as populated when a level-2 heading follows the section.
+    witness_leak_empty = "\n".join(
+        [
+            "### Witness ledger",
+            "",
+            "## Boundary notes",
+            "",
+            "| Mutator / boundary | Assertion |",
+            "|-------------------|------------|",
+            "| updateItem | surviving item carries its original input index |",
+        ]
+    )
+    result = validate_staging_file(
+        stage(
+            "shape2-findings-leak-empty",
+            shape_payload(last_fix_commit="abc123def456"),
+            shape_md(
+                tuple(
+                    line
+                    for line in full_meta
+                    if not line.startswith("- Witness ledger")
+                ),
+                witness=witness_leak_empty,
+            ),
+        ),
+        hard=True,
+    )
+    check(
+        "incident shape 2 (r4 F2): empty Witness section followed by a "
+        "level-2-heading pipe table does not count as populated; the "
+        "post-fix round fails hard naming the witness gate",
+        not result.ok and any("Witness ledger" in e for e in result.errors),
+    )
+    witness_leak_populated = "\n".join(
+        [
+            "### Witness ledger",
+            "",
+            "| Mutator / boundary | Assertion |",
+            "|-------------------|------------|",
+            "| updateItem | surviving item carries its original input index |",
+            "",
+            "## Boundary notes",
+            "",
+            "| Col |",
+            "|-----|",
+            "| x |",
+        ]
+    )
+    check(
+        "incident shape 2 (r4 F2): a real witness row still counts as "
+        "populated when a level-2 heading follows the section",
+        validate_staging_file(
+            stage(
+                "shape2-findings-leak-populated",
+                shape_payload(last_fix_commit="abc123def456"),
+                shape_md(witness=witness_leak_populated),
+            ),
+            hard=True,
+        ).ok,
+    )
+
+
 def run_selftest() -> int:
     import tempfile
 
@@ -5628,6 +8120,11 @@ def run_selftest() -> int:
             ("discarded_header_skip", _selftest_discarded_header_skip),
             ("versioned_schema_and_patterns", _selftest_versioned_schema_and_patterns),
             ("usage_optional", _selftest_usage_optional),
+            (
+                "extended_sidecar_freshness",
+                _selftest_extended_sidecar_freshness,
+            ),
+            ("incident_shapes", _selftest_incident_shapes),
         ):
             fn(root, check)
 

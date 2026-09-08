@@ -327,6 +327,30 @@ def create_private_file_exclusive(path: Path, data: bytes) -> None:
         os.umask(prev)
 
 
+def _open_pinned_read(path: Path, parent_fd: int, err_what: str) -> int:
+    """Open ``path``'s final component dirfd-relative for reading.
+
+    Shared by ``read_private_file`` and ``read_byte_buffer``: opens the
+    final component with ``O_RDONLY | O_NOFOLLOW | O_CLOEXEC`` relative
+    to ``parent_fd`` and owns the single symlink-refusal errno contract
+    (ELOOP/ENOTDIR -> ``PermissionsError``); any other ``OSError`` is
+    re-raised as ``type(exc)(f"{err_what}: {path}: {exc}")``. Returns
+    the raw fd (close-on-failure semantics stay with the caller).
+    """
+    try:
+        return os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
+            dir_fd=parent_fd,
+        )
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            raise PermissionsError(
+                f"refusing to follow symlink target: {path}"
+            ) from exc
+        raise type(exc)(f"{err_what}: {path}: {exc}") from exc
+
+
 def read_private_file(path: Path) -> bytes:
     """Read ``path`` bytes, rejecting symlink targets.
 
@@ -347,18 +371,7 @@ def read_private_file(path: Path) -> bytes:
     with _pinned_parent(
         path.parent, f"refusing symlinked parent: {path.parent}"
     ) as parent_fd:
-        try:
-            fd = os.open(
-                path.name,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-        except OSError as exc:
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise PermissionsError(
-                    f"refusing to follow symlink target: {path}"
-                ) from exc
-            raise type(exc)(f"cannot read private file: {path}: {exc}") from exc
+        fd = _open_pinned_read(path, parent_fd, "cannot read private file")
     # Re-assert mode on every run (fd-based, mirroring the directory
     # helpers): a legacy or restored file with a non-canonical mode is
     # reset on the read path, never via a path-string chmod. Advisory
@@ -563,18 +576,7 @@ def read_byte_buffer(path: Path) -> bytes:
     with _pinned_parent(
         path.parent, f"refusing symlinked parent: {path.parent}"
     ) as parent_fd:
-        try:
-            fd = os.open(
-                path.name,
-                os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC,
-                dir_fd=parent_fd,
-            )
-        except OSError as exc:
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise PermissionsError(
-                    f"refusing to follow symlink target: {path}"
-                ) from exc
-            raise type(exc)(f"cannot read byte buffer: {path}: {exc}") from exc
+        fd = _open_pinned_read(path, parent_fd, "cannot read byte buffer")
         try:
             fh = os.fdopen(fd, "rb")
         except BaseException:

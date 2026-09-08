@@ -82,6 +82,16 @@ When a change adds or renames migration-owned tables or indexes that local Docke
 - Flag missing updates to operator verify scripts (for example `docker/verify-local-schema.sh` `EXPECTED_TABLES` / `EXPECTED_INDEXES`) and `docker-compose.yml` volume mounts for new migration files.
 - Treat a green verify script that omits a required object as missing documentation/ops inventory, not only as an implementation gap.
 
+### Normative example replay (phase 1)
+
+For every changed normative example in the diff (request/response samples, config snippets, mode-rule illustrations in README, OpenAPI, plan, or RFC prose):
+
+- Either **validate** the example against the active schema, classifier, or mode rules it documents (run the validator, classifier, or rule check the example claims to satisfy), or build a structured **example inventory** recording the declared mode, required headers, protected fields, and expected result class.
+- An example that conflicts with its declared mode or field classification is a finding even when anchors and prose are correct. A syntactically valid example that would be rejected or classified differently under the rules it illustrates is a defect in the documentation.
+- Boundary: where full execution is impractical in the review context, the inventory satisfies the obligation. A successful documentation review must prove examples are not merely syntactically valid.
+
+Use pattern `documentation#missing-example-replay` when a changed example is neither validated nor inventoried, and `documentation#prose-example-conflict` when an example contradicts the rule it documents.
+
 ### Plan / RFC prose (phase 1)
 
 When reviewing a plan or RFC draft:

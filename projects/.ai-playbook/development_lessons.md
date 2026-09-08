@@ -5709,3 +5709,17 @@ When the identical command behaves differently in the agent shell versus the use
 **Example:** Replace "git status shows X, Y, Z still modified and uncommitted" with: "with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` equals the union of the task Files lists; no path outside the declared lists was staged, committed, or reverted."
 
 **See also:** the plans skill Validation Commands authoring rules (volatile-state rule), #181 (rename drift among gold source, consumers, and gates).
+
+## 306. Validate Multi-Entry Values Per Entry, Not Only At The Value Start
+
+**Principle:** Family H (verify the real thing)
+
+**Trigger:** You are adding or reviewing a validation gate over a value that aggregates multiple entries on one line (a receipt trailer, a CSV header, a combined flag string), and the check anchors its pattern at the start of the whole value.
+
+**Rule:** Apply entry-level checks to every entry of the aggregate, not only the first: split the value on the prescribed entry separator and run the forbidden/required pattern against each entry's start. Always simulate the MIXED mid-workflow state (one old valid entry plus one new violating entry) and confirm the gate fires on it; end-state-only witnesses (all valid, or single violating value) pass a start-anchored check while the newest violation sits in a later entry. Prescribe the separator in one place and align every prose surface that names a different separator (a "comma or semicolon" wording elsewhere silently reopens the bypass).
+
+**Why:** A plan-readiness gate rejected an unresolved decision only when it started the trailer line; the normal mid-interview state is a closed receipt followed by a semicolon-separated open marker, which a start-anchored check passes, so the exact workflow the gate existed to block sailed through. Review caught it only when a reviewer simulated the mixed state rather than the two pure states; the fold then also exposed a second separator surface prescribing commas.
+
+**Example:** Given trailer `rollout: phased (confirmed); open: is migration coupled`, a start-only `^(pending|tbd|todo|open)` stem passes (value starts with `rollout`); splitting on `;` and matching each stripped segment's start rejects the second segment. The rejected comma-tolerant split would false-split receipts carrying commas inside parentheses, so pin semicolon-only.
+
+**See also:** #253 (generate expected post-state by running today's rule, never hand-editing), the plans skill Validation Commands authoring rules (probe pattern rules).

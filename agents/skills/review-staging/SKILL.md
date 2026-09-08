@@ -32,10 +32,18 @@ Caller must provide:
    - `Depth`: `light` | `full` (RFC/plan reviews)
    - `Domains`: comma-separated tags from diff/plan (for example `concurrency`, `SQL`, `auth`, `docs-only`)
    - `Round`: `r1`, `r2`, … when part of a loop
+   - `Review mode`: `fresh-adversarial` | `targeted` | `verification-only`; a clean verdict contradicts `verification-only`
+   - `Changed-risk signals`: comma list of changed-risk signals (public API, cross-service call, generated or nullable model, serializer or message converter, security or rollout boundary) or `none`; this Metadata line uses the prose names of the five signal classes, while the sidecar `risk_signals` list uses their kebab-case forms (`public-api`, `cross-service-call`, `generated-or-nullable-model`, `serializer`, `security-or-rollout-boundary`)
+   - `Prior findings supplied as filter`: `no`; a clean verdict contradicts `yes`
+   - `Last fix commit`: commit sha of the last accepted fix preceding this round, or `none`
+   - `Witness ledger`: `<populated | N/A (no public mutators)>`; a non-null last fix commit on a post-fix round requires the populated-or-N/A witness shape (see the Metadata template and `### Witness ledger`)
+   - `Release-gate ledger`: `<rows or none>`
    - `Panel mode`: `full` | `focused`
    - `Selection reason`: required for focused panels
    - `Source digest`: SHA-256 of reviewed content
    - `Escalation reason`: required only for a sixth worker
+
+   The four freshness lines above (`Review mode`, `Changed-risk signals`, `Prior findings supplied as filter`, `Last fix commit`) are mechanically required only for records dated on or after `EXTENDED_SIDECAR_MIN_DATE` (Markdown surface: the staging filename's leading date), and the `Witness ledger` / `Release-gate ledger` lines are shape declarations validated through their sections rather than unconditionally required Metadata.
 8. **Review Statistics** (required on every review, including zero-finding rounds):
    - Panel rows: every actual worker launch or skip, with loaded lenses, `parent_worker`, and Solo/Echo counts
    - Deduplication, discarded findings, severity calibration, and triage outcomes by worker and lens
@@ -131,6 +139,12 @@ The staging doc must follow this structure exactly, including required headings:
 - Depth: light | full *(omit when not applicable)*
 - Domains: concurrency, SQL *(omit when unknown)*
 - Round: r1 *(omit on first non-loop review)*
+- Review mode: fresh-adversarial | targeted | verification-only
+- Changed-risk signals: <comma list or none>
+- Prior findings supplied as filter: no
+- Last fix commit: <sha or none>
+- Witness ledger: <populated | N/A (no public mutators)>
+- Release-gate ledger: <rows or none>
 - Panel mode: full | focused
 - Selection reason: <required for focused>
 - Source digest: <sha256>
@@ -186,6 +200,17 @@ When none: `None (agent severities matched staged severities).`
 
 Before triage: write zeros for Fixed/Dropped/Deferred and set Pending = Staged, or one line `Pending triage.` After triage: recompute per agent from finding **Triage** fields.
 
+### Witness ledger
+| Mutator / boundary | Input partitions | Transformation | Wire boundary & serializer | Downstream outcomes | Mode & deployed default | Doc examples | Discriminating assertion |
+|--------------------|------------------|----------------|----------------------------|---------------------|------------------------|-------------|---------------------------|
+| <mutator or boundary> | <absent, explicit-null, valid, invalid, protected, filtered where applicable> | <index, identity, or ordering transformation> | <actual downstream wire boundary and serializer configuration> | <success, partial-failure, malformed-response, no-call behavior> | <rollout or compatibility mode and deployed default> | <normative documentation examples describing the path> | <exact assertion or structural guard> |
+
+One row per changed public mutator and each directly affected downstream boundary. Each row names the input partitions exercised (absent, explicit-null, valid, invalid, protected, filtered where applicable), any index, identity, or ordering transformation the path performs, the actual downstream wire boundary and serializer configuration in effect, the downstream success, partial-failure, malformed-response, and no-call behavior, the rollout or compatibility mode and its deployed default, the normative documentation examples describing the path, and the exact discriminating assertion or structural guard backing each claim (the observation that would fail for the most likely implementation mistake).
+
+**Witness quality bar:** a row citing only a test name, a list position, a status code, or a manually configured fixture fails the quality bar when the invariant at risk is index preservation, wire serialization, downstream response, or mode preservation; the row must instead name the discriminating assertion or structural guard itself.
+
+**Witness empty shape:** when the diff has no changed public mutator, the Metadata carries `Witness ledger: N/A (no public mutators)` instead of `### Witness ledger` rows; a post-fix round that has neither a populated `### Witness ledger` nor that N/A line fails the gate (mirroring the mutator failure-mode matrix's `N/A: no mutating APIs in this plan` and the Release-gate ledger's `none` line). `<...>` placeholder rows in the template table never count as populated evidence.
+
 ## Findings
 
 ### Critical
@@ -233,6 +258,26 @@ None.
 | r24 | architecture#exception-ownership | ProfileTransportConverter | InvalidPropertyValueException | Restore consent-owned mapping | open |
 
 When none: `None.`
+
+## Release-gate ledger
+
+Optional; include this section only when a plan explicitly assigns a boundary to later work. One entry per deferred boundary, recording:
+
+- the missing capability and its owner
+- the current code path and configuration that would be unsafe without it
+- the deployment mode permitted before completion
+- the exact condition that makes the future path shippable
+- the classification, exactly one of: implementation blocker, release blocker owned elsewhere, non-blocking follow-up
+
+Example entry (uses the recognized line shape):
+
+- missing capability: boundary protection explicitly assigned to a later task; owner: the later task
+- unsafe path today: unguarded downstream call under the permissive compatibility mode
+- permitted deployment before completion: feature-flagged rollout only
+- shippable when: the boundary check is enforced and covered by tests
+- classification: release blocker owned elsewhere
+
+When no deferred boundary exists, Metadata carries `- Release-gate ledger: none`.
 ```
 
 ## Comment and Analysis depth requirements
@@ -253,7 +298,7 @@ All callers use `review-agents/severity-calibration.md`. Findings appear under `
 
 **Triage presentation freeze** (see `review-agents/severity-calibration.md` § Ordering): update Status / Triage / Comment / Analysis / Severity in place. If severity changes, move that finding into the correct section and keep ID order there. Do not reshuffle siblings. Sidecar `findings` array must use the same order as the markdown (severity sections, then ascending id). Triage may also re-evaluate a finding's **Blocking** value when an authorizing rule directs it (for example `receiving-review` **Fix-risk triage when fixes regenerate findings**): rewrite the Blocking bullet in place, record the rationale on the finding's Analysis section, and mirror the flip in the sidecar `findings[].blocking`; synthesis tables stay immutable.
 
-A review is clean only when no unresolved finding has `blocking: true`.
+A review is clean only when no unresolved finding has `blocking: true`. A clean verdict contradicts Metadata `Review mode: verification-only` and `Prior findings supplied as filter: yes` (the validator fails such a round): the round that closes a loop re-traverses the complete current diff from first principles, so it is staged `fresh-adversarial` with the filter `no`.
 
 ## Output discipline
 
@@ -289,6 +334,10 @@ Minimum schema:
   "source_kind": "code",
   "source_digest": "<lowercase 64-char hex SHA-256 of the exact reviewed bytes - compute a real digest; placeholder values like this one fail the validator, and the all-zero or empty-bytes digests are syntactically valid but hash nothing>",
   "escalation_reason": null,
+  "review_mode": "fresh-adversarial",
+  "risk_signals": ["public-api", "serializer"],
+  "prior_findings_filter": false,
+  "last_fix_commit": null,
   "counts": {
     "workers_launched": 5,
     "raw_findings": 5,
@@ -344,6 +393,10 @@ Required top-level fields (all must be present; enum-typed fields use `null` whe
 | `source_kind` | `"plan"` \| `"rfc"` \| `"document"` \| `"code"` |
 | `source_digest` | lowercase 64-char hex SHA-256 of the exact reviewed bytes |
 | `escalation_reason` | string or `null`; required non-null when a sixth worker launched |
+| `review_mode` | `"fresh-adversarial"` \| `"targeted"` \| `"verification-only"`; required for records dated on or after the validator constant `EXTENDED_SIDECAR_MIN_DATE` (`2026-09-09`) |
+| `risk_signals` | list of changed-risk signal tags (`[]` when none); tags are the kebab-case forms of the five signal classes (`public-api`, `cross-service-call`, `generated-or-nullable-model`, `serializer`, `security-or-rollout-boundary`); required for records dated on or after `EXTENDED_SIDECAR_MIN_DATE` |
+| `prior_findings_filter` | boolean; `false` for a clean verdict; required for records dated on or after `EXTENDED_SIDECAR_MIN_DATE` |
+| `last_fix_commit` | commit sha string or `null` (`null` when no accepted fix precedes the round); required for records dated on or after `EXTENDED_SIDECAR_MIN_DATE` |
 | `counts` | object; `workers_launched` must match non-skipped panel rows, `staged_findings` must match `findings` length |
 | `panel` | array of worker rows (`worker`, `lenses`, `parent_worker`, `descendant_launches`, `status`, counts) |
 | `deduplication_groups` | array (may be empty) |
@@ -355,6 +408,8 @@ Required top-level fields (all must be present; enum-typed fields use `null` whe
 | `soften_watchlist` | array; `[]` when none |
 
 Optional top-level fields: `depth` (string), `domains` (list), `verdict` (string `yes` or `no`; the plan-review producer writes it alongside the `## Summary`), `extensions` (object), `usage` (shape owned by the capture module; the validator accepts the key only). Any other top-level field is rejected; future extensions belong inside the object-valued `extensions` (a non-object `extensions` value is rejected).
+
+Extended-field grandfathering and cross-field rule: the four extended freshness fields (`review_mode`, `risk_signals`, `prior_findings_filter`, `last_fix_commit`) are required only on version-1 records whose `date` is on or after the validator constant `EXTENDED_SIDECAR_MIN_DATE` (`2026-09-09`, the day after this contract landed); a version-1 record dated earlier is accepted-legacy and exempt from them. The Markdown twin of this freshness fence keys on the staging filename's leading `YYYY-MM-DD` (the sidecar fence keys on the record's `date` field), and the validator refuses the exemption when a sidecar `date` is earlier than the filename's leading date on a filename dated on or after `EXTENDED_SIDECAR_MIN_DATE`. Cross-field rule: a clean verdict with a non-null `last_fix_commit` requires `review_mode: fresh-adversarial` (a `targeted` label on a post-fix clean round bypasses the fresh-adversarial mandate), and `prior_findings_filter` must be `false` for a clean verdict; the Markdown Metadata mirrors the same freshness lines (`Review mode`, `Prior findings supplied as filter`), where a clean verdict contradicts `verification-only` mode or filter `yes`.
 
 Canonical Pattern IDs (version-1): findings, overflow items, and discarded rows that carry a pattern must use `<lens>#<kebab-slug>` with an owner from the declared set in **Pattern id format**. A version-1 finding must also carry the same canonical `pattern` in its Markdown `- **Pattern**:` bullet; a missing or differing Markdown Pattern is a conservation error.
 

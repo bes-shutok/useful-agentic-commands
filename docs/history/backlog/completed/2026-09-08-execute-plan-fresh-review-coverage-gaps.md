@@ -1,6 +1,6 @@
 # Backlog: execute-plan fresh-review and boundary-witness gaps
 
-Status: open
+Status: done
 Workflow: backlog
 Origin: Post-execution independent branch review found blocking defects and release-gate risks after execute-plan had reported a clean final verification. The incident exposed a reusable review-cycle gap, not a product-specific problem.
 Severity: High

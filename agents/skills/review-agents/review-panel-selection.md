@@ -50,6 +50,19 @@ When `review-loop` or an `execute-plan` Phase 3 round runs a targeted round afte
 - When the plan has production paths and a prior round was blocking-clean on them under the risk and correctness lenses, schedule at most one exit hybrid (the missing quality-bar lenses, typically design-simplicity) for clear-round coverage; when the plan has no production paths, any blocking-clean round satisfies that precondition; in both branches the exit hybrid is still required before execute-plan Step 3.5's clean-review row may exit, unless the prior blocking-clean round was a full panel (it already carried every quality-bar lens, so exit coverage is satisfied). Do not resume docs/test-only focused rounds after it, and a blocking finding in the exit hybrid re-enters the normal address path. The exit-hybrid once-only allowance resets when any address pass after the hybrid mutates the digest, so the post-fix exit attempt again requires coverage.
 - When a soften watchlist has `open` rows, include the lead worker for each open pattern (tiered ownership table above).
 
+### Risk-signal floor
+
+Before any focused selection is honored, derive risk signals from the plan's explicit must-fix paths and the current diff. A risk signal is a code-mutation signal: the change touches a public API, a cross-service call, a generated or nullable model, a serializer or message converter, or a security or rollout boundary.
+
+- One or more risk signals: the worker set must include `correctness-completeness`, `testing`, `contract-docs`, and `risk`.
+- Two or more risk signals: the full five-worker panel (adding `design-simplicity`).
+
+Precedence: when the floor is triggered, it overrides both the focused-round preference in the late-loop paragraph of `### Targeted follow-ups` and the `## Focused panels` section above; a focused panel is not valid for that round even when the fixes are narrowly scoped.
+
+Boundary: a changed normative documentation example alone (docs-only or docs-plus-scripts diffs with no code-mutation signal) escalates `contract-docs` plus `correctness-completeness` coverage but does not trigger the `risk-signal floor`, so docs-only focused panels stay valid. Within execute-plan Step 3.1 item 5, doc/skill-only plans keep grep/hygiene commands as the `testing` worker's primary evidence.
+
+Record the detected signals in the staging Metadata `Changed-risk signals` field (comma list or `none`).
+
 ## Manual overrides
 
 User args bypass lens heuristics when explicit:

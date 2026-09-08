@@ -11,6 +11,8 @@ description: >
 
 Run `/learn` to capture lessons from this session, then commit all uncommitted changes across all repositories touched during the session.
 
+For dated reports or any request containing relative dates such as "today", "tomorrow", or "next Monday", verify the current date from the system environment at the start of the task and derive the target date from that value. Do not infer the date from conversation timing or a previously drafted filename.
+
 ## Repository scope ledger
 
 Before Step 0, inventory every repository touched by the task from tool activity, the user's explicit scope, and repository status. `done` applies to each applicable repository, not only the repository containing the latest artifact or the current working directory. Process each project repository independently through Steps 0-3 with its own lock, then run the shared skills and docs/facts commit checks. Never report completion while a touched repository remains unverified or uncommitted.

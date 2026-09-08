@@ -1,6 +1,6 @@
 # Backlog: review-loop rule 4 stop-clause anchor precision
 
-Status: open
+Status: done (2026-09-08, commit ba9dbd0: anchor now "closing stop-for-direction clause"; completed-plan probe copies are frozen history, untouched)
 Origin: Phase 3 code review r1 (F1, Low) of the review-pointer-wiring-polish execute-plan run, 2026-09-08
 Source finding: docs/reviews/2026-09-08-review-pointer-wiring-polish-code-review-r1.md
 

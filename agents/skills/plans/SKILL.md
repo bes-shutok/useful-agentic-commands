@@ -48,6 +48,29 @@ Ask the user for confirmation to create a new branch:
 
 `<short-description>` is derived from the feature name or planned plan slug, kebab-case, max ~40 chars.
 
+**Automatic path from clean trunk (fail-closed):** before asking, check the auto-branch conditions. When all of the following hold:
+
+- the current branch is exactly `master` or `main` (not detached HEAD, not any other branch),
+- both `git status --porcelain` and `git status --porcelain --ignored` are empty (non-empty ignored content keeps the confirmation; it may be user content that must not be buried by a branch switch),
+- the proposed branch name is derived from the requested task or plan slug via the naming convention above, and
+- the destination branch does not already exist (`git rev-parse --verify` fails for it, local or remote),
+
+then create and verify the local feature branch via Step 0.2 without asking for branch confirmation, and report what was created. Every other case keeps the explicit confirmation ask below: detached HEAD, dirty tracked content, untracked content, non-empty ignored content, a non-trunk base, an ambiguous target, an existing destination branch, or any history-rewriting operation. The automatic path does not skip or satisfy the requirements confirmation (Phase 1 still runs in full).
+
+Truth table (A = auto-branch without ask, C = explicit confirmation):
+
+```
+- clean `master`, computed name, no destination: A
+- clean `main`, computed name, no destination: A
+- dirty tracked content on trunk: C
+- untracked content on trunk: C
+- non-empty ignored content on trunk: C
+- non-trunk base (e.g. `develop` or a feature branch): C
+- detached HEAD: C
+- existing destination branch: C
+- ambiguous target or any history-rewriting operation: C
+```
+
 Ask the user:
 
 ```
@@ -510,7 +533,7 @@ Classify every finding as Critical, High, Medium, or Low, with independent block
 
 Write the review output to: `{reviews_dir}/YYYY-MM-DD-plan-review-<feature-name>-r<N>.md`
 (use `-r1`, `-r2`, … for each loop iteration)
-AND its `.stats.json` sidecar (`{reviews_dir}/<same-basename>.stats.json`), produced/validated in the same round: the mechanical readiness gate requires the sidecar of the LATEST round to exist with a `source_digest` matching the final plan bytes (a round that writes only the Markdown review fails `plan_readiness.py` with "missing stats sidecar"), and the sidecar MUST satisfy the CURRENT version-1 contract from `review-staging` - a versionless or minimal private shape classifies as legacy and fails the gate with "sidecar schema is legacy/versionless". At minimum declare `"schema_version": 1`, `review_type`, `date`, `artifact_slug`, `round`, `panel_mode` (plus `selection_reason` when focused), `source_kind`, `source_digest`, `escalation_reason`, `verdict`, and the `counts`/`panel`/`deduplication_groups`/`discarded`/`severity_calibration`/`triage_outcomes`/`findings`/`overflow`/`soften_watchlist` arrays; every `findings` row uses the gate's enum values (`reachability`: common/expected/plausible-edge/theoretical; `blast_radius`: global/multi-service/single-service/local; `confidence`: verified/strong-evidence/hypothesis), a canonical `pattern` ID, and integer ids matching the `#### F<N>.` headers in the Markdown, with at most 2 non-blocking Low findings per worker (extras go to `overflow`). The staging Markdown follows the required hierarchy (Metadata, Review Statistics, `### Critical|High|Medium|Low` groups in order, `#### F<N>.` finding blocks with field bullets) so finding conservation passes.
+AND its `.stats.json` sidecar (`{reviews_dir}/<same-basename>.stats.json`), produced/validated in the same round: the mechanical readiness gate requires the sidecar of the LATEST round to exist with a `source_digest` matching the final plan bytes (a round that writes only the Markdown review fails `plan_readiness.py` with "missing stats sidecar"), and the sidecar MUST satisfy the CURRENT version-1 contract from `review-staging` - a versionless or minimal private shape classifies as legacy and fails the gate with "sidecar schema is legacy/versionless". At minimum declare `"schema_version": 1`, `review_type`, `date`, `artifact_slug`, `round`, `panel_mode` (plus `selection_reason` when focused), `source_kind`, `source_digest`, `escalation_reason`, the four freshness fields (`review_mode`, `risk_signals`, `prior_findings_filter`, `last_fix_commit`), required on records dated on or after `EXTENDED_SIDECAR_MIN_DATE`; values and enum live in `review-staging`, `verdict`, and the `counts`/`panel`/`deduplication_groups`/`discarded`/`severity_calibration`/`triage_outcomes`/`findings`/`overflow`/`soften_watchlist` arrays; every `findings` row uses the gate's enum values (`reachability`: common/expected/plausible-edge/theoretical; `blast_radius`: global/multi-service/single-service/local; `confidence`: verified/strong-evidence/hypothesis), a canonical `pattern` ID, and integer ids matching the `#### F<N>.` headers in the Markdown, with at most 2 non-blocking Low findings per worker (extras go to `overflow`). When `last_fix_commit` is non-null, the staging Markdown Metadata carries the `Witness ledger: N/A (no public mutators)` line (plan reviews have no public mutators; the populated-or-N/A witness shape per `review-staging` is required on any code-review round with a non-null `last_fix_commit`). For records dated on or after `EXTENDED_SIDECAR_MIN_DATE`, the staged Markdown Metadata must also carry the four freshness lines (`Review mode`, `Changed-risk signals`, `Prior findings supplied as filter`, `Last fix commit`) per `review-staging`. The staging Markdown follows the required hierarchy (Metadata, Review Statistics, `### Critical|High|Medium|Low` groups in order, `#### F<N>.` finding blocks with field bullets) so finding conservation passes.
 
 The review artifact itself MUST contain a `## Summary` section recording the counts
 (Critical | High | Medium | Low), every blocking finding by id, and the explicit

@@ -1,6 +1,6 @@
 # Backlog: summarizer pinned-open helper dedup (read_private_file / read_byte_buffer)
 
-Status: open
+Status: done (2026-09-08, commit 9462142: extracted `_open_pinned_read`; full selftest suite ALL PASS; branch-review panel r1 zero findings)
 Workflow: backlog
 Source: docs/reviews/2026-09-07-2026-09-06-summarizer-tail-trio-code-review-r1.md (F3, Low, non-blocking, simplification#shrink)
 Severity: Low

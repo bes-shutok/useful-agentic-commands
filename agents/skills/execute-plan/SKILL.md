@@ -203,6 +203,8 @@ Continue on this branch for plan execution? (yes/no)
 
 When on a default branch or when the user declined Step 0.1b, announce: "Before executing the plan, I'll set up a dedicated branch. This ensures clean history and allows safe review/rollback."
 
+**Automatic path from clean trunk (fail-closed):** before asking, check the auto-branch conditions (same truth table as the `plans` skill Phase 0 Step 0.1). When the current branch is exactly `master` or `main` (not detached HEAD), both `git status --porcelain` and `git status --porcelain --ignored` are empty (non-empty ignored content keeps the confirmation), the branch name is computed from the plan slug via the naming convention above, and the destination branch does not already exist, proceed directly to Step 0.2 branch creation without the ask and report what was created. `develop` and every other non-`master`/`main` default keeps the explicit ask below, and every other case (dirty tracked content, existing destination, or any other condition in the plans truth table) keeps the explicit confirmation.
+
 Ask the user:
 
 ```
@@ -507,6 +509,7 @@ Track in `manifest.md`:
 - `re_entry_count`; same-round worker re-entries, reset each round
 - `standing_continue`; the standing-instruction line when one is granted, closed as ended at exit
 - `source_digest`; digest reviewed in the current pass
+- `last_fix_commit`; the most recent accepted-fix commit (from Step 3.3 or the skip-path receiving-review pass), reset to none when no address pass has accepted fixes
 
 **Provisional vs accepted findings:** dropped false positives do not block. Any accepted fix mutates the source and requires a fresh targeted review of the new digest. Severity alone does not determine readiness.
 
@@ -519,7 +522,9 @@ After Step 3.3 address-review mutates code, the **next** Step 3.1 is a **fresh a
 | **Verify-fix** (optional, inline in address-review) | Inside Step 3.3 after fixes | Confirm each fixed finding's executable artifact; re-run validation commands |
 | **Fresh review** (every Step 3.1) | Initial full panel or post-fix targeted panel | Current full branch diff; prior findings are context, not a filter |
 
-**Forbidden in Step 3.1 prompts:** verification-only framing that steers workers to rubber-stamp a revision.
+Every Step 3.1 launched after an accepted fix is labeled in the staging Metadata with the exact line `Review mode: fresh-adversarial`, and its worker prompt must contain the sentence `Prior findings are context, not a review filter; re-derive findings from a first-principles traversal of the complete current diff.`
+
+**Forbidden in Step 3.1 prompts:** verification-only framing that steers workers to rubber-stamp a revision. A verify-fix pass, a unit-only pass, or a verification-only pass never substitutes for the fresh-adversarial round and never satisfies Step 3.4's clean condition.
 
 **Rationale:** A Phase 3 clear streak after a FOR UPDATE fix still missed a High `promoteToActive` miss-path wipe and Medium ensure-then-promote success semantics on explicit must-fix paths. Confirmation framing caused the miss.
 
@@ -533,6 +538,7 @@ After Step 3.3 address-review mutates code, the **next** Step 3.1 is a **fresh a
 2. Resolve worker set from `review-panel-selection.md` and `<REVIEW_MODE_NOTES>`:
    - Initial pass: fresh adversarial five-worker review (`correctness-completeness`, `testing`, `design-simplicity`, `contract-docs`, `risk`).
    - After fixes: blind `correctness-completeness` plus every distinct worker that owned an accepted finding or whose domain the fixes affected.
+   - Derive risk signals from the plan's explicit must-fix paths and the current diff, then apply the `risk-signal floor` from `review-panel-selection.md`; record the detected signals in the staging Metadata `Changed-risk signals` field.
    - When concurrency signals exist: load premortem and concurrency inside `risk`; do not launch persona children.
 3. Launch **lens worker** sub-agents in parallel using the **Review lens worker** template from [subagent-prompts.md](subagent-prompts.md). Workers analyze; the parent synthesizes the staging doc (orchestrator / sub-agent boundary).
 4. Diff scope is **`git diff <BASE_BRANCH>...HEAD`** (all commits on the feature branch for this plan); not the latest commit alone. Apply the plan's **two-tier Review Scope**: findings on **explicit must-fix** paths are always in scope; for unlisted paths, keep findings only when **plan-related** (causally tied to a plan task, explicit change, or contract the plan altered); drop unrelated findings with a one-line reason.
@@ -542,7 +548,7 @@ After Step 3.3 address-review mutates code, the **next** Step 3.1 is a **fresh a
 
 **Timeout (operational):** wall-clock from Step 3.1 start. If **20 minutes** elapse without both (a) a non-empty staging doc at the expected `{reviews_dir}/...-code-review-r<N>.md` path and (b) a non-empty `<REVIEW_LOG_PATH>`, **stop** and ask the user: wait longer, relaunch a focused panel, or continue with parent-inline recovery for missing workers. Do not leave a nested or parent-orchestrated review running indefinitely.
 
-**Mutator failure-mode matrix (required in staging doc):** list every new or changed public mutating API on explicit must-fix paths. Missing rows make the round not clean even when no blocking finding remains. For doc/skill-only plans: `N/A: no mutating APIs in this plan`.
+**Mutator failure-mode matrix (required in staging doc):** list every new or changed public mutating API on explicit must-fix paths. Missing rows make the round not clean even when no blocking finding remains. For doc/skill-only plans: `N/A: no mutating APIs in this plan`. Matrix rows and the staging doc's Witness ledger rows (per `review-staging`) carry the same evidence obligation: each row names the exact discriminating assertion or structural guard that would fail for the most likely implementation mistake; a row citing only a test name, list position, status code, or manually configured fixture fails that obligation when the invariant at risk is index preservation, wire serialization, downstream response, or mode preservation.
 
 Review output: `{reviews_dir}/YYYY-MM-DD-<plan-slug>-code-review-r<N>.md` (increment `N` each round; use `-code-review-r` prefix to distinguish from pre-execution **plan** reviews at `…-plan-review-r<N>.md`).
 
@@ -560,8 +566,9 @@ Review output: `{reviews_dir}/YYYY-MM-DD-<plan-slug>-code-review-r<N>.md` (incre
 2. `<REVIEW_LOG_PATH>` exists and is non-empty (heartbeat plus final pass).
 3. Doc follows `doing-code-review` staging format sufficiently for Step 3.2 parsing (findings with Severity/Status/Triage) and includes populated `## Review Statistics` per `review-staging` (including Solo/Echo, Pattern, Severity calibration).
 4. Doc includes `## Mutator failure-mode matrix` with a row per new/changed public mutator on explicit must-fix paths (or an explicit `N/A: no mutating APIs in this plan` line). Incomplete matrix → relaunch Step 3.1.
-5. When concurrency signals exist, the `risk` row records `concurrency` and `premortem` as loaded lenses unless the user explicitly skipped premortem.
-6. **Panel actually ran:** a full-panel pass has complete rows for `correctness-completeness`, `testing`, `design-simplicity`, `contract-docs`, and `risk`. A focused follow-up records its selection reason. Flatten descendants into Panel accounting and reject more than six actual launches.
+5. On post-fix rounds (a non-null `last_fix_commit`), the staging doc carries either a populated `### Witness ledger` or the Metadata `Witness ledger: N/A (no public mutators)` empty shape per `review-staging`; a post-fix round with neither fails this gate. Incomplete ledger → relaunch Step 3.1.
+6. When concurrency signals exist, the `risk` row records `concurrency` and `premortem` as loaded lenses unless the user explicitly skipped premortem.
+7. **Panel actually ran:** a full-panel pass has complete rows for `correctness-completeness`, `testing`, `design-simplicity`, `contract-docs`, and `risk`. A focused follow-up records its selection reason. Flatten descendants into Panel accounting and reject more than six actual launches.
 
 If any check fails, relaunch the missing workers or re-synthesize the staging doc; do **not** enter Step 3.2 or launch address-review.
 
@@ -624,6 +631,8 @@ Backlog items, manifest updates, and disposition notes are bookkeeping, not dige
 1. **Mutator failure-mode matrix** present and complete (Step 3.1 gate #4); every mutator row has IT evidence, a staged finding, or `checked: yes` with a concrete pointer.
 2. **Not a discard-only quiet round without adversarial depth:** If raw findings were non-zero and **all** were discarded as `noise` / `already-mitigated` / `prior-review`, the review log or staging Analysis must still show the failure-mode matrix was filled from code/IT evidence (not left empty). An empty matrix plus "no findings" after a fix round is **unclear**; relaunch Step 3.1 with fresh-review framing.
 3. Required conditional risk lenses were loaded.
+4. **Last-fix ordering:** the clean round's reviewed head includes the last accepted-fix commit as ancestor-or-self (`git merge-base --is-ancestor <last_fix_commit> <clean-round-head>`; in the canonical loop the post-fix review runs at HEAD equal to the fix commit, which satisfies ancestor-or-self). The manifest records `last_fix_commit` when any address pass accepted fixes, and the orchestrator runs that check before treating the round as clean.
+5. **Release-gate ledger complete (per `review-staging`):** when the plan explicitly assigns a boundary to later work, the staging doc's `## Release-gate ledger` records every required field for each deferred boundary (missing capability and owner, unsafe current path and configuration, permitted deployment mode, shippability condition, classification); an incomplete ledger is not clean. The ledger is a handoff artifact only and never authorizes expanding the plan's scope.
 
 Record the current source digest and panel counters in `manifest.md`.
 
@@ -742,7 +751,7 @@ TMP_DIR="{tmp_dir}/execute-plan/<PLAN_SLUG>"
 test ! -e "{tmp_dir}/execute-plan/<PLAN_SLUG>" && echo "tmp cleanup OK"
 ```
 
-Report successful plan completion to the user, including the verified terminal-receipt fields, the Phase 3 fixed-vs-backlogged findings tally (backlog item paths for valid findings not fixed on the branch), and that session tmp logs and any review diff snapshots under `{tmp_dir}/execute-plan/<PLAN_SLUG>/` were removed. Review staging docs under `{reviews_dir}/` are **not** deleted by this step (separate lifecycle). Only after the terminal receipt was written and re-read may the parent send its final response for the execute-plan request.
+Report successful plan completion to the user, including the verified terminal-receipt fields, the Phase 3 fixed-vs-backlogged findings tally (backlog item paths for valid findings not fixed on the branch), and that session tmp logs and any review diff snapshots under `{tmp_dir}/execute-plan/<PLAN_SLUG>/` were removed. The exit report and any user-facing completion summary must carry every `release blocker owned elsewhere` row from the staging doc's `## Release-gate ledger` verbatim (the ledger is a handoff artifact, never authorization to expand the plan). Review staging docs under `{reviews_dir}/` are **not** deleted by this step (separate lifecycle). Only after the terminal receipt was written and re-read may the parent send its final response for the execute-plan request.
 
 ## Sub-Agent Launch Rules
 

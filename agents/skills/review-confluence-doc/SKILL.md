@@ -106,6 +106,16 @@ Review the document for the following quality dimensions (orchestrator-owned; su
 
 Before flagging a contradiction between the reviewed page and a local or linked contract, identify the owner and direction of each API or data flow. Distinguish an external integration API from the internal service API it wraps, and distinguish external request payloads from internal service-to-service messages. Trace the request path and compare like-for-like surfaces. If the differences are intentional boundary choices, do not report them as contradictions.
 
+#### 4.1.2 Review boundary and evidence check
+
+Before staging a finding, identify the document's intended owner, scope, and level of detail from the user's request and the page itself. Report gaps that the in-scope team must decide or implement. Do not report adjacent service internals, existing TDD requirements, platform routing, security details, or rollout operations when they are explicitly covered elsewhere or excluded from this document.
+
+Do not raise a failure scenario only because it is theoretically possible in a distributed system. Require evidence in the reviewed page, a linked source, or an applicable contract. If the source does not establish the scenario, treat it as a hypothesis and drop it unless the user confirms that it is in scope.
+
+#### 4.1.3 Plain language for findings
+
+Finding titles and comments must use common technical English. Describe the behaviour directly instead of relying on review jargon. For example, write "how migration restarts after a pause" instead of "resume invariant", "the meaning of changed fields" instead of "delta semantics", and "what happens after profile creation" instead of "handoff". For an overview document, defer exact implementation and operations details rather than presenting them as missing requirements.
+
 #### 4.2 Actionability
 - Can an engineer implement from this document without guessing?
 - Are decisions stated explicitly (not implied)?
@@ -166,7 +176,7 @@ Tag implementation findings `[Code]`. If no implementation logic is present, ski
 
 While merging Step 4, 4.5, and 4.6 returns, populate `## Review Statistics` per `review-staging` before writing the staging file:
 
-1. **Panel:** one row per actual worker launch with loaded lenses, parent worker, Solo/Echo, and descendant declarations. Write the required `.stats.json` sidecar alongside staging as a version-1 record (`schema_version: 1`) with `source_kind: "document"` and `source_digest` computed over the exact fetched page bytes this round reviewed (never copied from a prior round or a placeholder).
+1. **Panel:** one row per actual worker launch with loaded lenses, parent worker, Solo/Echo, and descendant declarations. Write the required `.stats.json` sidecar alongside staging as a version-1 record (`schema_version: 1`) with `source_kind: "document"` and `source_digest` computed over the exact fetched page bytes this round reviewed (never copied from a prior round or a placeholder). Version-1 sidecars dated on or after `EXTENDED_SIDECAR_MIN_DATE` must carry the freshness fields `review_mode`, `risk_signals`, `prior_findings_filter`, and `last_fix_commit`; see `review-staging` for the contract and the min-date fence.
 2. **Raw counts:** count every finding each source returned before dedup (orchestrator dimensions count as one combined Raw total).
 3. **Deduplication groups:** list all contributing workers and the staged finding kept.
 4. **Discarded findings:** record worker, lens pattern, severity, reason, and lead ownership.
