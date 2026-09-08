@@ -1,6 +1,6 @@
 # Backlog: backlog-gate hardening r5 Windows-portability residuals
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-backlog-gate-hardening-code-review-r5.md (two Low, non-blocking findings; deferred at the 5-round cap: out-of-platform scope, both fail-closed or partial on an unsupported host)
 Severity: Low

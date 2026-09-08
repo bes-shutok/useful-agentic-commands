@@ -1,6 +1,6 @@
 # Backlog: backlog-gate hardening r5 doc-consistency residuals
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-06-backlog-gate-hardening-code-review-r5.md (two Low, non-blocking findings; deferred at the 5-round cap to avoid mutating the reviewed digest after the final clean round)
 Severity: Low

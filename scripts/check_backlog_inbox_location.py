@@ -71,6 +71,17 @@ DEFAULT_BACKLOG_COMPLETED_DIR = "docs/history/backlog/completed"
 TOKENS = ("backlog", "deferred")
 
 
+def _hot_dir_parts(hot_dirs: tuple[str, ...]) -> tuple[tuple[str, ...], ...]:
+    """Segment hot-dir entries into parts tuples for ``Path.parts`` matching.
+
+    Separator normalization (``\\`` to ``/`` before splitting) keeps
+    Windows-native entries (e.g. ``docs\\maintenance``, which passes
+    ``os.path.normpath`` validation on Windows) matchable against scanned
+    ``Path.parts``; forward-slash entries split exactly as before.
+    """
+    return tuple(tuple(h.replace("\\", "/").split("/")) for h in hot_dirs)
+
+
 def resolve_backlog_home(repo_root: Path) -> tuple[Path, Path]:
     """Resolve (backlog_dir, backlog_completed_dir) from repo facts TOML.
 
@@ -110,40 +121,53 @@ def resolve_backlog_home(repo_root: Path) -> tuple[Path, Path]:
         elif raw is not None:
             p = Path(raw).expanduser()
             home = p if p.is_absolute() else repo_root / p
-            rel = os.path.relpath(home, repo_root)
-            if (
-                rel == "."
-                or rel == ".."
-                or rel.startswith(".." + os.sep)
-            ):
-                print(
-                    f"warning: {key} resolves to {rel} of the repo root; "
-                    f"falling back to {default}",
-                    file=sys.stderr,
-                )
-                home = None
-            elif not home.resolve().is_relative_to(repo_root):
-                # Resolved containment, mirroring the resolve_hot_dirs
-                # sibling key: a lexically inside-repo value that resolves
-                # (e.g. through a symlink) outside the repo root must not
-                # anchor the backlog home there.
+            try:
+                rel = os.path.relpath(home, repo_root)
+            except ValueError:
+                # Cross-drive homes (Windows): relpath raises instead of
+                # producing an escaping path; treat it as the degenerate
+                # case so the standard warn-and-fallback keeps rule 2 up.
                 print(
                     f"warning: {key} resolves outside the repo root; "
                     f"falling back to {default}",
                     file=sys.stderr,
                 )
                 home = None
-            elif home.resolve() == repo_root:
-                # Resolved-equal-to-root: the lexical guard above cannot see
-                # this (the value itself is inside-repo, e.g. a symlink to
-                # "."), yet a root-equal home makes is_relative_to match
-                # every path and silently disable rule 2.
-                print(
-                    f"warning: {key} resolves to the repo root; "
-                    f"falling back to {default}",
-                    file=sys.stderr,
-                )
-                home = None
+            else:
+                if (
+                    rel == "."
+                    or rel == ".."
+                    or rel.startswith(".." + os.sep)
+                ):
+                    print(
+                        f"warning: {key} resolves to {rel} of the repo root; "
+                        f"falling back to {default}",
+                        file=sys.stderr,
+                    )
+                    home = None
+                elif not home.resolve().is_relative_to(repo_root):
+                    # Resolved containment, mirroring the resolve_hot_dirs
+                    # sibling key: a lexically inside-repo value that resolves
+                    # (e.g. through a symlink) outside the repo root must not
+                    # anchor the backlog home there.
+                    print(
+                        f"warning: {key} resolves outside the repo root; "
+                        f"falling back to {default}",
+                        file=sys.stderr,
+                    )
+                    home = None
+                elif home.resolve() == repo_root:
+                    # Resolved-equal-to-root: the lexical guard above cannot
+                    # see this (the value itself is inside-repo, e.g. a
+                    # symlink to "."), yet a root-equal home makes
+                    # is_relative_to match every path and silently disable
+                    # rule 2.
+                    print(
+                        f"warning: {key} resolves to the repo root; "
+                        f"falling back to {default}",
+                        file=sys.stderr,
+                    )
+                    home = None
         if home is None:
             if raw is None and facts_paths is not None:
                 print(
@@ -382,7 +406,7 @@ def scan_repo(repo_root: Path) -> list[tuple[str, int]]:
     )
     violations: dict[str, int] = {}
     hot_dirs = resolve_hot_dirs(repo_root)
-    hot_dir_parts = tuple(tuple(h.split("/")) for h in hot_dirs)
+    hot_dir_parts = _hot_dir_parts(hot_dirs)
 
     # Rule 1: filesystem walk of the hot dirs (untracked files included;
     # absent dirs tolerated).
@@ -1117,7 +1141,7 @@ def _selftest_parser_unavailable_repo(root: Path, check) -> None:
 def _selftest_hot_dirs_key_repo(root: Path, check) -> None:
     """``backlog_hot_dirs`` facts key: replace semantics + fallback rules.
 
-    Six arms: (1) override — the configured list fully replaces the
+    Seven arms: (1) override — the configured list fully replaces the
     defaults, so a token file under a DEFAULT hot dir is not flagged and
     the custom dir fires rule 1; (2) blank — a present-but-empty key
     warns and falls back so rule 1 cannot silently disable; (3) an
@@ -1135,7 +1159,9 @@ def _selftest_hot_dirs_key_repo(root: Path, check) -> None:
     ``resolve_hot_dirs`` containment drop, NOT the ``scan_repo``
     top-level check (unreachable for configured entries because the drop
     fires first; that check is TOCTOU defense-in-depth and is pinned by
-    the ``symlink#default-dir-escape`` arm in the symlink-repo selftest).
+    the ``symlink#default-dir-escape`` arm in the symlink-repo selftest);
+    (7) dotdot-prefixed-name - a real in-repo directory whose NAME starts
+    with ``..`` is honored, pinning the first-segment escape test.
     """
 
     def run_case(name: str, hot_dirs_value: str) -> Path:
@@ -1317,6 +1343,105 @@ def _selftest_hot_dirs_key_repo(root: Path, check) -> None:
     check(
         "not a repo-relative directory" not in stderr,
         f"hot_dirs_key#dotdot-prefixed-name: dotdot-named dir falsely dropped as escaping (stderr: {stderr!r})",
+    )
+
+
+def _selftest_windows_portability(root: Path, check) -> None:
+    """Windows-portability probes (in-process; host-independent).
+
+    Two arms: (1) ``winport#hot-dir-backslash-parts`` — the
+    ``_hot_dir_parts`` segmentation helper normalizes backslash separators
+    before splitting, so a Windows-native configured entry yields
+    ``Path.parts``-matchable tuples while a forward-slash entry passes
+    through unchanged; (2) ``winport#cross-drive-relpath-fallback`` — a
+    cross-drive ``os.path.relpath`` ``ValueError`` (a Windows-only
+    condition, forced here by patching ``relpath`` to raise) lands on the
+    documented warn-and-fallback default-home path instead of crashing
+    ``resolve_backlog_home``.
+    """
+    import io
+    import contextlib
+    import inspect
+    from unittest import mock
+
+    # (1) hot-dir-backslash-parts: separator-normalizing segmentation,
+    # plus the scan_repo wiring pin (a reverted inline segmentation in
+    # scan_repo would pass every other fixture on POSIX while silently
+    # disabling Windows rule 1; the pinned literal matches the original
+    # inline call-site form, which the helper body cannot produce).
+    try:
+        got = _hot_dir_parts(("docs\\maintenance", "docs/tmp"))
+        check(
+            got == (("docs", "maintenance"), ("docs", "tmp")),
+            f"winport#hot-dir-backslash-parts: got {got!r}, expected "
+            "(('docs', 'maintenance'), ('docs', 'tmp'))",
+        )
+        check(
+            _hot_dir_parts(("docs/tmp",)) == (("docs", "tmp"),),
+            "winport#hot-dir-backslash-parts: forward-slash entry changed",
+        )
+        try:
+            scan_src = inspect.getsource(scan_repo)
+        except (OSError, TypeError):
+            # Source unavailable (frozen/zipimport execution): the wiring
+            # pin is vacuous there; skip it rather than abort the harness.
+            scan_src = ""
+        check(
+            "tuple(h.split" not in scan_src,
+            "winport#hot-dir-backslash-parts: scan_repo inline "
+            "segmentation regression",
+        )
+    except NameError:
+        check(
+            False,
+            "winport#hot-dir-backslash-parts: _hot_dir_parts helper missing",
+        )
+
+    # (2) cross-drive-relpath-fallback: relpath ValueError warns + defaults.
+    repo = root / "winport-crossdrive"
+    repo.mkdir()
+    # No git repo needed: resolve_backlog_home is called directly and only
+    # reads the facts file (pure in-process probe, no scan).
+    _write(
+        repo,
+        ".ai-playbook/facts.md",
+        "```toml\n"
+        'backlog_dir = "docs/history/backlog/"\n'
+        'backlog_completed_dir = "docs/history/backlog/completed/"\n'
+        "```\n",
+    )
+    err = io.StringIO()
+    uncaught = False
+    with mock.patch("os.path.relpath", side_effect=ValueError):
+        with contextlib.redirect_stderr(err):
+            try:
+                home_pair = resolve_backlog_home(repo.resolve())
+            except ValueError:
+                # Record here, FAIL outside the redirect below: the
+                # harness prints FAIL labels to stderr, which this
+                # context captures.
+                uncaught = True
+    if uncaught:
+        check(
+            False,
+            "winport#cross-drive-relpath-fallback: uncaught "
+            "ValueError (no fallback)",
+        )
+        return
+    expected = (
+        repo.resolve() / "docs/history/backlog",
+        repo.resolve() / "docs/history/backlog/completed",
+    )
+    check(
+        home_pair == expected,
+        f"winport#cross-drive-relpath-fallback: {home_pair!r} != default "
+        f"{expected!r}",
+    )
+    check(
+        "falling back" in err.getvalue()
+        and "outside the repo root" in err.getvalue(),
+        f"winport#cross-drive-relpath-fallback: cross-drive fallback "
+        f"warning missing (stderr: {err.getvalue()!r})",
     )
 
 
@@ -1600,6 +1725,7 @@ def run_selftest() -> int:
             ("parser_unavailable_repo",
              _selftest_parser_unavailable_repo),
             ("hot_dirs_key_repo", _selftest_hot_dirs_key_repo),
+            ("windows_portability", _selftest_windows_portability),
             ("hot_dir_symlink_repo", _selftest_hot_dir_symlink_repo),
             ("toplevel_anchor_repo", _selftest_toplevel_anchor_repo),
             ("git_absent_repo", _selftest_git_absent_repo),
