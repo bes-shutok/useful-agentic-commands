@@ -82,6 +82,30 @@ DECISION_MARKER_RE = re.compile(
     r"^Decision points requiring a grill:[ \t]*(\S.*?)[ \t]*$", re.MULTILINE
 )
 
+# Plans reviewed on or after this date must have a well-formed ##
+# Review Scope section (path categories consistent with path kind, no
+# path in two categories, every task Files: path inventoried). Earlier
+# rounds are legacy and exempt (no retrofit of already-certified plans).
+REVIEW_SCOPE_MIN_DATE = "2026-09-09"
+
+# Generic default path-kind suffix tables for the Review Scope category
+# gate. These are LANGUAGE/FORMAT defaults (implementation vs
+# documentation file extensions) and must NOT be narrowed or widened to
+# encode one consumer repository's layout; repo-specific classification
+# belongs in the plan text, not in these constants. Pure-config
+# extensions (.yaml .yml .json .toml .xml .gradle) are deliberately
+# ABSENT from the implementation table (r1 F3): docs pipelines carry
+# real config (mkdocs.yaml, docs/_data/refs.json) under Documentation,
+# and flagging them taught authors to misclassify; a doc-suffix path
+# under Documentation is additionally authoritative via the doc table
+# below (r1 F4/F7 consumer).
+REVIEW_SCOPE_IMPLEMENTATION_SUFFIXES = (
+    ".py", ".java", ".kt", ".kts", ".ts", ".tsx", ".js", ".jsx", ".go",
+    ".rb", ".rs", ".c", ".cc", ".cpp", ".h", ".hpp", ".cs", ".php",
+    ".sh", ".bash", ".sql",
+)
+REVIEW_SCOPE_DOC_SUFFIXES = (".md", ".rst", ".adoc", ".txt")
+
 
 def sidecar_verdict(payload: dict) -> str | None:
     """Conforming sidecar ``verdict`` value (``"yes"``/``"no"``), else ``None``.
@@ -238,6 +262,11 @@ def _strip_fences(text: str) -> str:
 def decision_marker_problem(plan_text: str) -> str | None:
     """Reason when the decision-points trailer is missing or unresolved.
 
+    The author-facing statement of trailer acceptance mechanics lives in
+    the plans skill plan-template Assumptions line
+    (agents/skills/plans/SKILL.md); this probe owns enforcement — link
+    there, do not restate the mechanics.
+
     ``None`` when the single trailer line inside the ``## Assumptions``
     section reads ``none remain.`` (case-insensitive, trailing period
     optional) or carries a non-placeholder receipt; a named reason
@@ -263,6 +292,243 @@ def decision_marker_problem(plan_text: str) -> str | None:
         return None
     if value.lstrip().startswith("<") or _PLACEHOLDER_RE.match(value.lstrip()):
         return f"unresolved decision-points trailer: {value!r}"
+    return None
+
+
+# Category-block label inside the ## Review Scope section: a bolded
+# ``**<label>:**`` line opens a block; subsequent ``- `` items belong to
+# it. A label containing ``Out of scope`` is prose, not a category block.
+_REVIEW_SCOPE_CATEGORY_RE = re.compile(r"^\*\*(.+?):\*\*\s*$")
+# A test-detectable path: any path SEGMENT named test/tests/spec.
+_REVIEW_SCOPE_TEST_SEGMENTS = ("test", "tests", "spec")
+
+
+def _review_scope_is_doc_path(path: str) -> bool:
+    """True when the path carries a documentation-format suffix.
+
+    A doc-suffix path is never test-detectable (F4: ``docs/spec/
+    architecture.md`` is documentation that lives under a spec dir, not a
+    test) and is authoritative under a Documentation label (the spec-dir
+    arm exercises this branch). Config-suffixed paths such as
+    ``site.yaml`` are NOT doc-suffix paths: they pass a Documentation
+    label only because config extensions are absent from the
+    implementation table (r1 F3), a separate mechanism.
+    """
+    return path.lower().endswith(REVIEW_SCOPE_DOC_SUFFIXES)
+
+
+def _review_scope_is_test_path(path: str) -> bool:
+    """True when any path segment is test/tests/spec (doc-suffix paths
+    are never test-detectable)."""
+    if _review_scope_is_doc_path(path):
+        return False
+    return any(
+        segment in _REVIEW_SCOPE_TEST_SEGMENTS
+        for segment in re.split(r"[\\/]+", path.lower())
+    )
+
+
+def _review_scope_path_token(item: str) -> str:
+    """Leading path token of a list item, dropping trailing annotations.
+
+    List items in Review Scope category blocks and task ``Files:`` lists
+    carry trailing annotations (``- ``src/service.py`` *(new; this
+    plan)*``); comparisons must see the bare path. The first backticked
+    span wins when present, else the first whitespace-delimited token
+    after backtick stripping (F2: annotation-blind parsing made the
+    category, duplicate, and inventory checks silently inoperative for
+    the template's annotated common case). A single leading ``./`` is
+    stripped (r2 F5: ``./src/a.py`` in scope and ``src/a.py`` in Files
+    must not fail coverage on notation drift).
+    """
+    def _strip_dot_slash(token: str) -> str:
+        return token[2:] if token.startswith("./") else token
+
+    ticked = re.search(r"`([^`]+)`", item)
+    if ticked:
+        return _strip_dot_slash(ticked.group(1).strip())
+    if not item.strip():
+        return ""
+    return _strip_dot_slash(item.strip().strip("`").strip().split()[0])
+
+
+def _review_scope_task_files(stripped: str) -> list[str]:
+    """Every ``Files:`` list-item path from ``### Task`` sections.
+
+    Extraction reads ONLY the list items in the ``Files:`` block of each
+    task section. A ``Files:`` line opens a block ONLY when it carries no
+    inline payload (``Files: none new (...)`` is prose, not a list
+    opener); collection ends at the first checkbox item (``- [``) or any
+    line that is neither a ``- `` item nor blank, so checkbox bullets
+    elsewhere in the task are never collected as paths (F1: the repo
+    template places ``Files:`` above the task checkboxes, and the old
+    blank-tolerant loop collected every checkbox as a path). An INDENTED
+    list item (raw line starts with whitespace, stripped form starts
+    with ``- ``) is a nested annotation sub-bullet, not a path: it is
+    skipped while collection CONTINUES for the sibling top-level items
+    (r2 F3: collecting it yielded a garbage path token and a spurious
+    gate failure naming a phantom path; matches the top-level-only
+    semantics of the Review Scope category parser). Each item is
+    normalized to its leading path token (``_review_scope_path_token``).
+    """
+    paths: list[str] = []
+    for match in re.finditer(r"^### Task.*$", stripped, re.MULTILINE):
+        tail = re.split(r"\n#{2,3} ", stripped[match.end() :], maxsplit=1)[0]
+        collecting = False
+        for line in tail.splitlines():
+            if line.startswith("Files:"):
+                # An inline payload (e.g. "Files: none new (validation
+                # only; ...)") is a prose statement, not a list opener.
+                collecting = not line[len("Files:"):].strip()
+                continue
+            if not collecting:
+                continue
+            stripped_line = line.strip()
+            if not stripped_line:
+                continue
+            if stripped_line.startswith("- ["):
+                collecting = False
+                continue
+            indented_item = line[:1].isspace() and stripped_line.startswith("- ")
+            if stripped_line.startswith("- ") and not indented_item:
+                token = _review_scope_path_token(stripped_line[2:])
+                if token:
+                    paths.append(token)
+            elif indented_item:
+                continue
+            else:
+                collecting = False
+    return paths
+
+
+def review_scope_problem(plan_text: str) -> str | None:
+    """Reason when the ``## Review Scope`` section miscategorizes paths.
+
+    Fences are stripped from the WHOLE document first (same ordering as
+    the trailer gate); an absent ``## Review Scope`` section yields
+    ``None`` (fail-open on shape absence is deliberate: the section is
+    plan-authoring convention, not a hard schema). Checks, first problem
+    wins:
+
+    (a) an implementation-suffix or test-detectable path listed under a
+        label matching ``documentation`` (case-insensitive) — a
+        doc-suffix path (REVIEW_SCOPE_DOC_SUFFIXES) is authoritative
+        under Documentation and never flagged here; the reason names the
+        path, the declared category, and the expected category
+        (``Tests`` for test-detectable, ``Production code`` otherwise);
+    (b) a path listed under two different category blocks;
+    (c) a ``Files:`` list path from a ``### Task`` section that appears
+        nowhere in the Review Scope section text (category list,
+        plan-related-extension prose, or out-of-scope list). Items in
+        both surfaces are normalized to their leading path token before
+        any comparison (trailing annotations are not part of the path).
+    """
+    stripped = _strip_fences(plan_text)
+    scope = md_section(stripped, "Review Scope")
+    if not scope:
+        return None
+
+    # Parse category blocks in document order.
+    blocks: list[tuple[str, list[str]]] = []
+    current: tuple[str, list[str]] | None = None
+    for line in scope.splitlines():
+        label_match = _REVIEW_SCOPE_CATEGORY_RE.match(line)
+        if label_match:
+            label = label_match.group(1).strip()
+            # The hyphenated spelling "out-of-scope" must match too
+            # (r2 F6: normalize hyphens to spaces before the test).
+            current = (
+                None
+                if "out of scope" in label.lower().replace("-", " ")
+                else (label, [])
+            )
+            if current is not None:
+                blocks.append(current)
+            continue
+        item_match = re.match(r"^-\s+(.+?)\s*$", line)
+        if item_match and current is not None:
+            token = _review_scope_path_token(item_match.group(1))
+            if token:
+                current[1].append(token)
+
+    # (a) path kind vs declared category. A doc-suffix path (the
+    # REVIEW_SCOPE_DOC_SUFFIXES table) is AUTHORITATIVE under a
+    # Documentation label (spec-directory docs like
+    # docs/spec/architecture.md exercise this branch). Docs-pipeline
+    # config (site.yaml) passes a Documentation label only because
+    # config extensions are absent from the implementation-suffix table
+    # (r1 F3), not because .yaml is a doc suffix.
+    for label, items in blocks:
+        if "documentation" not in label.lower():
+            continue
+        for path in items:
+            if _review_scope_is_doc_path(path):
+                continue
+            if _review_scope_is_test_path(path):
+                return (
+                    f"Review Scope lists {path} under declared category "
+                    f"{label!r}; path kind suggests 'Tests'"
+                )
+            if path.lower().endswith(REVIEW_SCOPE_IMPLEMENTATION_SUFFIXES):
+                return (
+                    f"Review Scope lists {path} under declared category "
+                    f"{label!r}; path kind suggests 'Production code'"
+                )
+
+    # (b) one path under two different category blocks.
+    label_of: dict[str, str] = {}
+    for label, items in blocks:
+        for path in items:
+            previous = label_of.get(path)
+            if previous is not None and previous != label:
+                return (
+                    f"duplicate path across Review Scope categories: "
+                    f"{path} listed under both {previous!r} and {label!r}"
+                )
+            label_of[path] = label
+
+    # (c) task Files: paths must appear in the inventory: either as an
+    # extracted scope-path token (category items, normalized the same
+    # way), as a DIRECTORY scope entry covering it (r2 F4: a token that
+    # ends with ``/`` with the task path under it, or a token whose
+    # ``token + "/"`` form is a component-boundary prefix of the task
+    # path — trailing slashes are normalized inside the comparison
+    # (r3 F1), and the boundary keeps the F8 superstring case failing:
+    # ``scripts/foo.py`` does not cover ``scripts/foo.py.bak``), or as a
+    # path-boundary occurrence in any line of the section text
+    # (plan-related-extension prose and out-of-scope lists keep
+    # counting; F8: a raw substring test let ``scripts/foo.py`` pass on a
+    # longer different path like ``scripts/foo.py.bak``).
+    scope_paths = {path for _, items in blocks for path in items}
+
+    def _scope_token_covers(token: str, path: str) -> bool:
+        # Trailing-slash notation drift (r3 F1): scope ``docs/`` must
+        # cover task ``docs`` and scope ``docs`` must cover task
+        # ``docs/``; normalize the slash on the token side only, inside
+        # this component-boundary comparison. The ``token + "/"``
+        # boundary keeps the F8 superstring case failing
+        # (``scripts/foo.py`` does not cover ``scripts/foo.py.bak``).
+        dir_token = token.rstrip("/")
+        if not dir_token:
+            return False
+        if path == dir_token:
+            return True
+        return path.startswith(dir_token + "/")
+
+    for path in _review_scope_task_files(stripped):
+        if path in scope_paths:
+            continue
+        if any(_scope_token_covers(token, path) for token in scope_paths):
+            continue
+        boundary = re.compile(
+            rf"(?<![\w./\\-]){re.escape(path)}(?![\w./\\-])"
+        )
+        if any(boundary.search(line) for line in scope.splitlines()):
+            continue
+        return (
+            f"task Files path {path} is omitted from the Review Scope "
+            f"inventory"
+        )
     return None
 
 
@@ -481,19 +747,44 @@ def evaluate_readiness(
     # for the digest are decoded here; only a decode failure can still
     # reach this reason family.
     round_date = str(payload.get("date") or "").strip()
-    if (
-        re.fullmatch(r"\d{4}-\d{2}-\d{2}", round_date)
-        and round_date >= DECISION_MARKER_MIN_DATE
-    ):
+    date_is_exact = bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", round_date))
+    trailer_gated = date_is_exact and round_date >= DECISION_MARKER_MIN_DATE
+    scope_gated = date_is_exact and round_date >= REVIEW_SCOPE_MIN_DATE
+    # Decode sharing without widening the decode failure (r2 F2): the
+    # plan bytes are decoded ONCE, and ONLY when at least one of the two
+    # date guards fires — an undecodable plan whose round is date-exempt
+    # must not newly fail. The trailer block's existing decode-failure
+    # reason text is kept for that shared case; the decoded text is
+    # passed to whichever probe runs below.
+    if trailer_gated or scope_gated:
         try:
             plan_text = plan_bytes.decode("utf-8")
         except UnicodeDecodeError as exc:
-            return False, f"cannot read plan bytes for trailer check: {exc}"
+            return False, (
+                f"cannot read plan bytes for gated checks (trailer and/or "
+                f"Review Scope): {exc}"
+            )
+    if trailer_gated:
         problem = decision_marker_problem(plan_text)
         if problem:
             return False, (
                 f"{problem} (required for plans reviewed on or after "
                 f"{DECISION_MARKER_MIN_DATE}; latest round r{round_no} is "
+                f"dated {round_date})"
+            )
+
+    # 7. Review Scope category gate (forward-looking): plans whose LATEST
+    # round is dated on or after REVIEW_SCOPE_MIN_DATE must carry a
+    # well-formed ## Review Scope section; earlier rounds stay exempt (no
+    # retrofit). The same malformed-or-missing-date exemption as the
+    # trailer gate applies (a non-YYYY-MM-DD value never reaches the
+    # lexicographic comparison).
+    if scope_gated:
+        problem = review_scope_problem(plan_text)
+        if problem:
+            return False, (
+                f"{problem} (required for plans reviewed on or after "
+                f"{REVIEW_SCOPE_MIN_DATE}; latest round r{round_no} is "
                 f"dated {round_date})"
             )
 
@@ -1968,6 +2259,484 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
     )
     _clean_reviews_dir(reviews_dir)
 
+def _selftest_review_scope(plans_dir: Path, reviews_dir: Path, check) -> None:
+    """Review Scope category family: path-kind vs declared category,
+    duplicate categories, task-Files inventory coverage, and the
+    sidecar-date exemption arms.
+
+    Every fixture plan is dated on or after 2026-09-08, so each carries a
+    plain ``Decision points requiring a grill: none remain.`` line inside
+    its ``## Assumptions`` section; otherwise the arms would fail on the
+    trailer gate instead of exercising the category gate. The gated arms
+    use 2026-09-09 (this gate's own minimum), and the below-min exemption
+    arm uses 2026-09-08 (above DECISION_MARKER_MIN_DATE but below
+    REVIEW_SCOPE_MIN_DATE, so the trailer gate still runs there too).
+    """
+    trailer = "Decision points requiring a grill: none remain."
+
+    def rs_plan(scope_body: str, tasks_body: str = "") -> str:
+        parts = [f"# P\n\n## Assumptions\n\n{trailer}\n"]
+        if tasks_body:
+            parts.append(f"\n## Tasks\n\n{tasks_body}\n")
+        parts.append(f"\n## Review Scope\n\n{scope_body}")
+        return "".join(parts)
+
+    # doc_under_documentation_ok: a documentation-suffix path declared
+    # under **Documentation:** passes.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan("**Documentation:**\n\n- docs/guide.md\n"),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/doc_under_documentation_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # implementation_under_documentation: an implementation-suffix path
+    # declared under **Documentation:** fails; the reason must name the
+    # path, the declared category, and the expected category.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan("**Documentation:**\n\n- src/service.py\n"),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/implementation_under_documentation",
+        not ok
+        and reason is not None
+        and "src/service.py" in reason
+        and "Documentation" in reason
+        and "Production code" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # duplicate_across_categories: one path under two different category
+    # blocks fails with a duplicate-path reason.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Production code:**\n\n- src/service.py\n\n"
+            "**Tests:**\n\n- src/service.py\n"
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/duplicate_across_categories",
+        not ok
+        and reason is not None
+        and "duplicate" in reason
+        and "src/service.py" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # task_file_missing_from_inventory: a ### Task section whose Files:
+    # lists a path the Review Scope section never mentions fails with an
+    # omitted-from-inventory reason.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "- [ ] Step one.\n\n"
+                "Files:\n\n"
+                "- src/missing.py\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/task_file_missing_from_inventory",
+        not ok
+        and reason is not None
+        and "src/missing.py" in reason
+        and "Review Scope" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # extension_only_coverage_ok: a task Files: path that appears only in
+    # the plan-related-extension PROSE of the Review Scope section (no
+    # category list entry) still counts as inventoried and passes.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n\n"
+            "Extensions of this plan in later rounds may also touch "
+            "docs/ext/guide.md; those rounds carry their own review.\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "- [ ] Step one.\n\n"
+                "Files:\n\n"
+                "- docs/ext/guide.md\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/extension_only_coverage_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # sidecar_date_missing_exempt: a VIOLATION plan (implementation path
+    # under Documentation) whose sidecar carries no date field is exempt;
+    # this arm proves the date guard exists, since the violation-only
+    # arms cannot.
+    plan, review = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan("**Documentation:**\n\n- src/service.py\n"),
+        date="2026-09-09",
+    )
+    sidecar = json.loads(
+        review.with_suffix(".stats.json").read_text(encoding="utf-8")
+    )
+    del sidecar["date"]
+    review.with_suffix(".stats.json").write_text(
+        json.dumps(sidecar), encoding="utf-8"
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/sidecar_date_missing_exempt",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # sidecar_date_below_min_exempt: the same violation plan with a
+    # sidecar dated 2026-09-08 (below REVIEW_SCOPE_MIN_DATE but at the
+    # decision-marker minimum) is exempt; no retrofit of
+    # already-certified plans.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan("**Documentation:**\n\n- src/service.py\n"),
+        date="2026-09-08",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/sidecar_date_below_min_exempt",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # template_files_above_checkboxes_ok (r1 F1): the repo's canonical
+    # task layout — Files: block, blank line, then - [x] checkboxes —
+    # must NOT bleed the checkboxes into the extracted Files paths.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- docs/guide.md\n"
+                "\n"
+                "- [x] Record the current HEAD sha before editing.\n"
+                "- [ ] Apply the edit.\n"
+                "\n"
+                "Notes:\n\n- some note\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/template_files_above_checkboxes_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # inline_files_line_ok (r1 F1): an inline "Files: none new (...)"
+    # line is prose, not a list opener; the checkboxes after it are
+    # never collected.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n",
+            tasks_body=(
+                "### Task 1: Validation only\n\n"
+                "- [x] Run the gate.\n"
+                "\n"
+                "Files: none new (validation only; fixes commit to the "
+                "owning file)\n"
+                "\n"
+                "- [x] Record the current HEAD sha before editing.\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/inline_files_line_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # annotated_implementation_under_documentation (r1 F2): a trailing
+    # annotation on the item must not defeat check (a); the reason still
+    # names the path, declared category, and expected category.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n"
+            "- `src/service.py` *(new; this plan)*\n"
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/annotated_implementation_under_documentation",
+        not ok
+        and reason is not None
+        and "src/service.py" in reason
+        and "Documentation" in reason
+        and "Production code" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # annotated_task_path_coverage_ok (r1 F2): an annotated task Files
+    # entry vs a plain scope entry must count as inventoried.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- `docs/guide.md` *(updated; this plan)*\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/annotated_task_path_coverage_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # doc_config_under_documentation_ok (r1 F3): docs-pipeline config
+    # (site.yaml) under a Documentation label passes because config
+    # extensions are ABSENT from the implementation table (r1 F3), not
+    # because .yaml is a doc suffix (it is not; the doc-suffix authority
+    # branch is exercised by the spec-dir arm).
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- `site.yaml` *(new; this plan)*\n"
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/doc_config_under_documentation_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # spec_dir_doc_under_documentation_ok (r1 F4): a doc-suffix path
+    # under a spec/ directory segment is documentation, not Tests.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- `docs/spec/architecture.md`\n"
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/spec_dir_doc_under_documentation_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # test_path_under_documentation (r1 F6): a test-segment path under a
+    # Documentation label fails with a reason naming "Tests".
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- `src/tests/unit.py`\n"
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/test_path_under_documentation",
+        not ok
+        and reason is not None
+        and "src/tests/unit.py" in reason
+        and "Tests" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # substring_superstring_not_inventory (r1 F8): a task path that only
+    # appears as a substring of a longer different scope path is NOT
+    # inventoried (scripts/foo.py vs scripts/foo.py.bak).
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Production code:**\n\n- `scripts/foo.py.bak`\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- scripts/foo.py\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/substring_superstring_not_inventory",
+        not ok
+        and reason is not None
+        and "scripts/foo.py" in reason
+        and "omitted from the Review Scope" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # nested_subbullet_not_path_ok (r2 F3): an indented annotation
+    # sub-bullet under a Files item is skipped (not collected as a
+    # phantom path); sibling top-level items still count.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/guide.md\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- docs/guide.md\n"
+                "  - updated section anchors only; no new file\n"
+                "- [x] done note kept out of Files by the checkbox rule\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/nested_subbullet_not_path_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # directory_scope_entry_covers_ok (r2 F4): a directory entry in a
+    # category block covers task Files paths beneath it
+    # (component-boundary prefix; the F8 superstring case stays failing).
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Documentation:**\n\n- docs/\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- docs/guide.md\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/directory_scope_entry_covers_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # directory_slash_polarity_ok (r3 F1): trailing-slash notation drift
+    # between the scope entry and the task Files path must not
+    # false-reject. Both polarities in one fixture: bare scope token
+    # `docs` covers slashed task path `docs/`, and slashed scope token
+    # `scripts/` covers bare task path `scripts`.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Production code:**\n\n- docs\n- scripts/\n",
+            tasks_body=(
+                "### Task 1: Bare scope covers slashed path\n\n"
+                "Files:\n\n"
+                "- docs/\n\n"
+                "### Task 2: Slashed scope covers bare path\n\n"
+                "Files:\n\n"
+                "- scripts\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/directory_slash_polarity_ok",
+        ok and reason is None,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+    # bare_token_boundary_not_covered (r3 F4): a non-slash directory
+    # token must NOT cover a longer path that merely shares the token as
+    # a string prefix (`scripts` vs `scripts-old/tool.py`); the boundary
+    # fails with the omitted-from-inventory reason.
+    plan, _ = _write_clean_state(
+        plans_dir,
+        reviews_dir,
+        plan_text=rs_plan(
+            "**Production code:**\n\n- scripts\n",
+            tasks_body=(
+                "### Task 1: Do the thing\n\n"
+                "Files:\n\n"
+                "- scripts-old/tool.py\n"
+            ),
+        ),
+        date="2026-09-09",
+    )
+    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+    check(
+        "selftest#review_scope/bare_token_boundary_not_covered",
+        not ok
+        and reason is not None
+        and "scripts-old/tool.py" in reason
+        and "omitted from the Review Scope" in reason,
+        f"ok={ok} reason={reason}",
+    )
+    _clean_reviews_dir(reviews_dir)
+
+
 def _selftest_accepted_state(
     plans_dir: Path, reviews_dir: Path, check
 ) -> None:
@@ -2436,6 +3205,7 @@ def run_selftest() -> int:
         _selftest_paths_and_blocking(root, plans_dir, reviews_dir, check)
         _selftest_round_selection(plans_dir, reviews_dir, check)
         _selftest_decision_marker(plans_dir, reviews_dir, check)
+        _selftest_review_scope(plans_dir, reviews_dir, check)
         _selftest_accepted_state(plans_dir, reviews_dir, check)
         _selftest_cli(root, plans_dir, reviews_dir, check)
         _selftest_sweep(root, plans_dir, reviews_dir, check)

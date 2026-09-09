@@ -1,5 +1,7 @@
 # Plan: plans fact-versus-decision confidence gate
 
+> Errata (2026-09-08, from docs/history/backlog/2026-09-07-plans-confidence-gate-plan-execution-checks.md): three r6 review residuals are folded below as in-place corrections. Execution completed 2026-09-07 without these corrections, so the backlog's certify-the-amended-digest clause is void; the corrections fix the document as a record, they do not re-open or re-certify the completed execution.
+
 Backlog: docs/history/backlog/2026-09-07-plans-facts-do-not-resolve-design-ambiguity.md
 
 ## Terms
@@ -85,7 +87,7 @@ V=scripts/plan_readiness.py
 # Mechanical gates (behavioral truth)
 python3 scripts/plan_readiness.py --selftest
 python3 scripts/validate_review_staging.py --selftest
-bash scripts/check-no-em-dash.sh file "$P" "$G" "$D" "$R" "$V" docs/plans/2026-09-07-plans-facts-do-not-resolve-design-ambiguity.md
+bash scripts/check-no-em-dash.sh file "$P" "$G" "$D" "$R" docs/plans/2026-09-07-plans-facts-do-not-resolve-design-ambiguity.md
 bash scripts/scan-public-hygiene.sh
 
 # Dedicated obligation pins (one grep per obligation; distinctive spans; fail-closed)
@@ -119,6 +121,7 @@ Files:
 - `agents/skills/plans/SKILL.md`
 
 - [x] Record the current HEAD sha as `<base>` in the session notes before this task's commit (Task 8 uses it for the scope-integrity check).
+- [x] Run the stale-tier sweep against the PRE-EDIT tree once first to record it fires (RED-today proof); expect it to fire. (inserted by the 2026-09-08 errata; the original execution ran this sweep post-edit, per r6 F2)
 - [x] In the confidence gate block, replace the first sentence of the High-confidence bullet (today: `exactly one interpretation is strongly supported by repo evidence, established convention, or an already-confirmed decision, and a wrong call is cheap to correct during implementation.`) with: `exactly one reasonable interpretation exists, choosing any other would be unreasonable or is cheap to correct, and that interpretation is supported by repo evidence, established convention, or an already-confirmed user decision.` Keep the rest of the bullet unchanged.
 - [x] Immediately after the High-confidence bullet (the last tier bullet, before the Scope-extension hard gate paragraph), insert:
 
@@ -132,7 +135,7 @@ Files:
 **Confidence-gate regression cases (fail-closed routing):** (1) a single-boundary feature whose single implementation is clearly required stays eligible for a high-confidence assumption; (2) a feature with an adjacent boundary, compatibility path, or ownership choice routes to `grill-with-docs`; (3) authoritative sources describing multiple alternatives still route to the grill; (4) a cleanup request with one apparently unrelated commit beside feature work still asks the grilling scope question; (5) a cleanup request with dirty, untracked, or ignored files records preservation before any restore; (6) a source-owned prerequisite is placed under `Ship when`, not converted into an assumption or executable task; (7) an explicit user decision suppresses only the already-resolved question, never unrelated ambiguity.
 ```
 
-- [x] Run the dedicated pins for this task (dividers, materiality test, carve-out, regression cases) in the fail-closed form of Validation Commands; expect GREEN. Also run the stale-tier sweep against the PRE-EDIT tree once first to record it fires (RED-today proof), then re-run post-edit; expect the sweep silent.
+- [x] Run the dedicated pins for this task (dividers, materiality test, carve-out, regression cases) in the fail-closed form of Validation Commands, then re-run the stale-tier sweep post-edit; expect both GREEN and the sweep silent.
 - [x] Commit (only the file listed above): `skills: plans fact-vs-decision confidence gate, ambiguity scan base`
 
 ### Task 2: plans ambiguity scan and requirements buffer subsection
@@ -450,6 +453,6 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
 Files: none new (validation only; fixes commit to the owning file)
 
 - [x] Run the full Validation Commands block from a clean shell at the repo root; expect exit 0 end to end.
-- [x] Verify scope integrity of this plan's own commits: with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` must equal the union of the task Files lists; any extra path in this plan's commit history is a defect to fix before completion.
+- [x] Verify scope integrity of this plan's own commits: with `<base>` recorded before Task 1's commit, `git log --format:'' --name-only <base>..HEAD | sort -u` must equal the plan's declared artifact set: the union of the task Files lists, this plan document, and this plan's review artifacts; the done commit-all path must be fenced by enumerating any additional paths the done step commits; any extra path in this plan's commit history is a defect to fix before completion.
 - [x] Verify no concurrent peer state was consumed: the commit half is proven by the scope-integrity check above; the working-tree half is proven by never staging, committing, checkout-reverting, or otherwise touching any path this plan never declares. The peer committing or reworking its own files mid-execution is expected and harmless; the invariant binds only this plan's actions.
 - [x] Commit any validation-driven fixes individually to their owning files; expect none needed.

@@ -1,6 +1,6 @@
 # Backlog: plans:233 acceptance-mechanics prose restatement governance
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-07-plans-facts-do-not-resolve-design-ambiguity-code-review-r3.md (code review r3, overflow entry, design-simplicity worker, Low, architecture#duplicated-contract-prose)
 Severity: Low
@@ -38,3 +38,5 @@ Third recurrence of the same restatement-governance item:
 - agents/skills/review-plan/SKILL.md:318 (Low, sibling): the sidecar-date exemption mechanics are restated in the review-plan Integration Points clause instead of pointing at `evaluate_readiness`'s own comment; the r4 F4 fix edited one clause in place rather than converting it to a pointer.
 
 Both remain the same class (sibling-doc restatement vs the validator's single-owner contract) and fold into this existing item per the non-interactive backlog-deferral default; no duplicate backlog item created. Status stays open pending the owner governance decision above, which now covers both surfaces.
+
+Landed: Landed via Task 3 (21b9155 + 567f180 pointer compression + validator back-pointer comment); r2-vs-r3 contradiction resolved in r2 favor.

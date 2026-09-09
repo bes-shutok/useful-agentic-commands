@@ -1,6 +1,6 @@
 # Backlog: validate plan review-scope path categories
 
-Status: open
+Status: done
 Workflow: backlog
 Source: user correction during an implementation-plan review, 2026-09-07
 Severity: Medium
@@ -39,3 +39,5 @@ Keep the rule independent of repository names, programming languages, module nam
 - Do not change a consumer implementation plan as the durable fix.
 - Do not require every documentation file to be listed as an explicit must-fix path when the plan-related-extension policy intentionally covers it.
 - Do not infer categories from one repository's exact directory layout without a documented generic rule or configurable convention.
+
+Landed: Landed via docs/plans/completed/2026-09-08-plan-authoring-tooling-polish.md Tasks 1-2 (commit 567f180 lineage); residual label-grammar gap tracked in docs/history/backlog/2026-09-09-plan-readiness-scope-category-label-grammar.md.

@@ -1,6 +1,6 @@
 # Backlog: confidence-gate plan execution-check residuals (r6 F1-F3)
 
-Status: open
+Status: done
 Workflow: backlog
 Source: review-plan r6 residuals on docs/plans/2026-09-07-plans-facts-do-not-resolve-design-ambiguity.md (2026-09-07, ready=yes zero blocking; residuals valid but unfixed because the plan bytes are digest-frozen at certification and the reconciliation round budget was spent)
 Severity: Low
@@ -20,3 +20,5 @@ Scope: Task 7/8 execution checks of the implementing plan above; apply as a plan
 ## Not part of this backlog item
 
 - No changes to the shipped skill or script content; all three residuals concern the plan document's own execution checks.
+
+Landed: Landed via Task 5 as dated errata on the completed plans-facts doc (187c903 + dac29c6 F9 counterfactual tag); certify-amended-digest clause void per plan Assumptions.
