@@ -657,3 +657,16 @@ module level instead of function-local imports, and drop alias imports
 (`import io as _io`) that only one style of the old pattern needed. Gate to
 check: grep for `sys.stderr =` assignments in test code; each one is a site
 waiting to become `redirect_stderr`.
+
+## 25. Selftest guards must raise explicitly and reject whitespace-only parts
+
+A selftest guard written as a bare `assert` is stripped under `python -O`,
+so the exact invariant it protects silently stops being checked in optimized
+runs. Write invariant guards as explicit `if not <invariant>: raise
+AssertionError(<context suffix>)` instead of `assert <invariant>, <suffix>`.
+Pair this with content checks: a "non-empty" check like
+`all(parts)` admits whitespace-only parts and then passes vacuously; use
+`all(p.strip() for p in parts)` when emptiness means "no meaningful content".
+Gate to check: grep test and selftest code for bare `assert` used as a
+data-invariant guard (not a simple expected-value check); each hit is a guard
+that dies under `-O`.

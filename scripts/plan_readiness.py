@@ -228,12 +228,16 @@ def _strip_fences(text: str) -> str:
     Single-active-fence-state parser (r2 F1, r3 F2/F4, r4 F1): honors BOTH
     CommonMark fence syntaxes (backtick ``` and tilde ``~~~``). An OPENER
     is a run of 3+ fence characters (optionally carrying an info string,
-    e.g. ```` ```text ````), indented at most 3 spaces; the opener's
+    e.g. ```` ```text ````), indented at most 3 spaces — EXCEPT (r5 F8) a
+    backtick opener whose info string contains a backtick is paragraph
+    content, not an opener (tilde openers keep accepting any info string);
+    a line whose leading whitespace contains a tab counts as indent >= 4
+    (r5 F8) and can neither open nor close. The opener's
     character and run length are recorded. A CLOSER is a bare run of the
     SAME character, at least as long as the opener, with only optional
     trailing whitespace and at most 3 leading spaces — a closer line
     carrying info text (```` ``` note ````) or a shorter same-character
-    run does not close the fence, and a longer run never closes a shorter
+    run does not close the fence, and a shorter run never closes a longer
     one early in the fail-open direction. While one fence is open, only
     such a closer toggles it, so a stray ``` line inside a tilde block
     cannot desync the parser. An unterminated fence stays open at end of
@@ -245,11 +249,27 @@ def _strip_fences(text: str) -> str:
     """
     out = []
     fence = None  # (fence character, opener run length) when open
-    for line in text.splitlines():
+    # r5 F7: split on "\n" ONLY — splitlines() also splits on CR, VT, FF,
+    # and the Unicode separators U+0085/U+2028/U+2029, letting a separator
+    # embedded inside a fence-character run fabricate a parser-line closer.
+    # Each line is normalized by removing ONE trailing "\r" (CRLF input),
+    # and the normalized line is used for BOTH fence matching and emission
+    # (a match-only strip would leave the "\r" in the emitted line and
+    # falsely reject CRLF plans at ``[ \t]*$`` anchors).
+    for raw in text.split("\n"):
+        line = raw[:-1] if raw.endswith("\r") else raw
         stripped = line.lstrip()
-        lead = len(line) - len(stripped)
+        lead_ws = line[: len(line) - len(stripped)]
+        # r5 F8: a leading tab reads as indent >= 4 (CommonMark), so a
+        # tab-indented line can never open or close a fence; fail-closed.
+        lead = 4 if "\t" in lead_ws else len(lead_ws)
         if fence is None:
             m = _FENCE_OPENER_RE.match(stripped) if lead <= 3 else None
+            # r5 F8: a BACKTICK opener whose info string contains a
+            # backtick is CommonMark paragraph content, not an opener
+            # (tilde openers keep accepting any info string).
+            if m and m.group(1)[0] == "`" and "`" in stripped[len(m.group(1)):]:
+                m = None
             if m:
                 fence = (m.group(1)[0], len(m.group(1)))
             else:
@@ -300,7 +320,7 @@ def decision_marker_problem(plan_text: str) -> str | None:
     if len(values) > 1:
         return f"ambiguous decision-points trailer: {len(values)} lines"
     value = values[0]
-    if value.strip().lower() in {"none remain.", "none remain"}:
+    if value.lower() in {"none remain.", "none remain"}:
         return None
     for segment in value.split(";"):
         start = segment.lstrip()
@@ -1712,7 +1732,6 @@ def _selftest_paths_and_blocking(
     )
     _clean_reviews_dir(reviews_dir)
 
-    # plan_outside_plans_dir.
     outside = root / "outside-plan.md"
     outside.write_text("# outside\n", encoding="utf-8")
     ok, reason = evaluate_readiness(outside, plans_dir, reviews_dir)
@@ -1722,7 +1741,6 @@ def _selftest_paths_and_blocking(
         f"ok={ok} reason={reason}",
     )
 
-    # missing_plan_path.
     ghost = plans_dir / "2026-09-01-ghost.md"
     ok, reason = evaluate_readiness(ghost, plans_dir, reviews_dir)
     check(
@@ -1889,15 +1907,14 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
     (``ok and reason is None``) from fail-arms (``not ok and needle in
     (reason or "")``). Every ``selftest#decision_marker/*`` check name is
     verbatim from the pre-refactor family; the sidecar-mutation arms
-    (missing/blank/malformed date) stay bespoke below because they edit
-    the sidecar after the fixture write, and the fence-boundary comments
-    sit beside their tuples.
+    (missing/blank/malformed date) are a second table below (r5 F10: one
+    fixture write and one ``mutate(sidecar)`` call per row), and the
+    fence-boundary comments sit beside their tuples.
     """
     trailer = "Decision points requiring a grill: "
 
     # Standard arms: (suffix, plan_text, date, expect_ok, needle).
     arms: list[tuple[str, str, str, bool, str | None]] = [
-        # gated_none_remain_passes.
         (
             "gated_none_remain_passes",
             f"# P\n\n## Assumptions\n\n{trailer}none remain.\n",
@@ -1905,7 +1922,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_none_remain_lenient_form_passes (r2 F3): the gate accepts
+        # (r2 F3): the gate accepts
         # the literal none-remain line case-insensitively with an OPTIONAL
         # trailing period.
         (
@@ -1915,15 +1932,16 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_missing_trailer_fails.
+        # (r5 F3: multi-needle also pins the
+        # 2026-09-08 minimum date behind the gate).
         (
             "gated_missing_trailer_fails",
             "# P\n\nBody.\n",
             "2026-09-08",
             False,
-            "missing decision-points trailer",
+            "missing decision-points trailer"
+            "|required for plans reviewed on or after 2026-09-08",
         ),
-        # gated_placeholder_trailer_fails.
         (
             "gated_placeholder_trailer_fails",
             f"# P\n\n## Assumptions\n\n{trailer}<point>: <receipt>\n",
@@ -1931,7 +1949,6 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # gated_receipt_passes.
         (
             "gated_receipt_passes",
             (
@@ -1943,7 +1960,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_multiple_receipts_one_line_passes (r1 F1): all per-point
+        # (r1 F1): all per-point
         # receipts on ONE trailer line (semicolon-separated); one line per
         # point would be ambiguous.
         (
@@ -1958,7 +1975,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_no_assumptions_heading_fails (r1 F2): with NO ##
+        # (r1 F2): with NO ##
         # Assumptions heading the section extraction is fail-closed
         # (empty), so a trailer line inside ## Notes cannot satisfy the
         # gate.
@@ -1972,7 +1989,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # trailer_inside_fence_fails (r1 F3): a fenced template quote
+        # (r1 F3): a fenced template quote
         # under ## Assumptions is stripped before matching.
         (
             "trailer_inside_fence_fails",
@@ -1985,7 +2002,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # trailer_unterminated_fence_fails (r2 F1): an unterminated fence
+        # (r2 F1): an unterminated fence
         # fails CLOSED: the fence-state parser stays open to end of input
         # and drops everything it swallowed.
         (
@@ -1999,7 +2016,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # heading_inside_fence_under_assumptions_passes (r2 F1): a fenced
+        # (r2 F1): a fenced
         # ``## `` heading line must not truncate the section; a real
         # trailer after the fence still passes.
         (
@@ -2013,7 +2030,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_pending_word_trailer_fails (r1 F6): a value merely
+        # (r1 F6): a value merely
         # STARTING with a placeholder token is unresolved (`TBD for now`
         # used to pass).
         (
@@ -2023,7 +2040,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # gated_todo_prefixed_receipt_passes (r2 F2): a RESOLVED receipt
+        # (r2 F2): a RESOLVED receipt
         # whose first word only STARTS with the placeholder letters
         # (``todo-list ...``) passes.
         (
@@ -2037,7 +2054,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_hyphenated_placeholder_passes (r4 F2, characterization):
+        # (r4 F2, characterization):
         # the hyphen carve-out treats ANY stem-hyphen value as a resolved
         # receipt, so ``tbd-for-now`` passes (the regex cannot tell it
         # from a real receipt without semantics; the boundary is pinned,
@@ -2049,7 +2066,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_open_trailer_fails: a trailer value STARTING with the
+        # a trailer value STARTING with the
         # bare stem ``open:`` is an unresolved open question.
         (
             "gated_open_trailer_fails",
@@ -2058,7 +2075,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # gated_mixed_open_segment_fails: a mixed mid-interview trailer
+        # a mixed mid-interview trailer
         # (a CLOSED receipt plus a semicolon-separated ``open:`` segment)
         # is unresolved; a start-only stem check would miss it.
         (
@@ -2072,7 +2089,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # gated_mixed_template_segment_fails: a ``<`` template token is
+        # a ``<`` template token is
         # unresolved wherever it sits, including as a later
         # semicolon-separated segment.
         (
@@ -2086,7 +2103,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # open_question_hyphen_receipt_passes (characterization): the
+        # (characterization): the
         # hyphen carve-out keeps a receipt whose first word is the
         # hyphenated ``open-question`` passing, mirroring the pinned
         # ``todo-list`` receipt.
@@ -2101,7 +2118,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # legacy_missing_trailer_passes: a round dated before the constant
+        # a round dated before the constant
         # is exempt (no retrofit of already-certified plans).
         (
             "legacy_missing_trailer_passes",
@@ -2110,7 +2127,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # trailer_outside_assumptions_fails (r3 F1): a later quoted
+        # (r3 F1): a later quoted
         # template mention outside ## Assumptions can never satisfy the
         # gate.
         (
@@ -2123,7 +2140,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # ambiguous_two_trailer_lines_fails (r4 F1): an unresolved line
+        # (r4 F1): an unresolved line
         # above a terminal "none remain." line must not pass on last-wins
         # semantics.
         (
@@ -2136,7 +2153,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "ambiguous decision-points trailer",
         ),
-        # trailer_tilde_fence_fails (r3 F2): a quoted template line inside
+        # (r3 F2): a quoted template line inside
         # a TILDE fence (~~~) with an INFO-STRING OPENER (~~~markdown) is
         # stripped like a backtick fence.
         (
@@ -2150,7 +2167,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # trailer_after_tilde_block_with_stray_backticks_passes (r3 F2): a
+        # (r3 F2): a
         # ``` line that is LITERAL TEXT inside a tilde block must not
         # toggle the fence state (single-active-fence-character parser).
         (
@@ -2166,7 +2183,25 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             True,
             None,
         ),
-        # gated_placeholder_lookalike_trailer_fails (r3 F3): lookalike
+        # (r5 F6): a stray ```~~~``` line that is LITERAL TEXT inside an open
+        # BACKTICK fence must not toggle the fence state
+        # (single-active-fence-character parser; cross-character mirror of
+        # the stray-backticks-in-tilde-block arm above).
+        (
+            "trailer_after_backtick_block_with_stray_tildes_passes",
+            (
+                "# P\n\n## Assumptions\n\n```\n"
+                "quoted template\n"
+                "~~~\n"
+                "more quoted text\n"
+                "```\n\n"
+                f"{trailer}none remain.\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # (r3 F3): lookalike
         # tokens with trailing word characters (``todos``) are unresolved.
         (
             "gated_placeholder_lookalike_trailer_fails",
@@ -2175,7 +2210,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # gated_pending_placeholder_trailer_fails (r3 F6): the ``pending``
+        # (r3 F6): the ``pending``
         # alternative of the placeholder regex has its own witness.
         (
             "gated_pending_placeholder_trailer_fails",
@@ -2184,7 +2219,7 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "unresolved decision-points trailer",
         ),
-        # trailer_swallowed_by_earlier_unterminated_fence_fails (r3 F7):
+        # (r3 F7):
         # an unterminated fence opening BEFORE ## Assumptions swallows the
         # heading and trailer; pins the strip-before-extract ordering.
         (
@@ -2197,53 +2232,156 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
             False,
             "missing decision-points trailer",
         ),
-        # trailer_inside_close_with_info_text_fails (r4 F1): a closer line
+        # (r4 F1): a closer line
         # carrying info text (```` ``` note ````) is fence CONTENT, not a
-        # closer; CommonMark keeps the fence open, so the quoted trailer
-        # stays invisible.
+        # closer; CommonMark keeps the fence open, so the REAL trailer
+        # after the pseudo-closer stays invisible (r5 F1: the trailer now
+        # sits after the pseudo-closer, so a lenient closer regression
+        # would expose it and flip this arm red).
         (
             "trailer_inside_close_with_info_text_fails",
             (
-                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                "# P\n\n## Assumptions\n\n```\nquoted template\n``` note\n"
                 f"{trailer}none remain.\n"
-                "``` note\n\nBody.\n"
+                "```\n"
             ),
             "2026-09-08",
             False,
             "missing decision-points trailer",
         ),
-        # trailer_inside_short_close_fails (r4 F1): a 3-backtick line does
+        # (r5 F5): a tilde closer line carrying info text (````` ~~~ end `````)
+        # is fence CONTENT, not a closer, so the REAL trailer after the
+        # pseudo-closer stays invisible inside the still-open tilde fence
+        # (tilde-side twin of the info-text backtick arm above).
+        (
+            "trailer_inside_tilde_close_with_info_text_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n~~~\nquoted template\n"
+                "~~~ end\n"
+                f"{trailer}none remain.\n"
+                "~~~\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # (r4 F1): a 3-backtick line does
         # NOT close a 4-backtick opener (closer run must be at least the
-        # opener run); the quoted trailer stays inside the open fence.
+        # opener run); the REAL trailer after the pseudo-closer stays
+        # inside the open fence (r5 F1: a lenient closer that ignores run
+        # length would expose the trailer and flip this arm red).
         (
             "trailer_inside_short_close_fails",
             (
-                "# P\n\n## Assumptions\n\nNone needed.\n\n````\n"
+                "# P\n\n## Assumptions\n\n````\nquoted template\n```\n"
                 f"{trailer}none remain.\n"
-                "```\n\nBody.\n"
+                "````\n"
             ),
             "2026-09-08",
             False,
             "missing decision-points trailer",
         ),
-        # trailer_after_indent_4_closer_stays_fenced (r4 F5): a closer
+        # (r4 F5): a closer
         # line with exactly 4 leading spaces is outside the <=3 indent
-        # bound, so the fence stays open and the quoted trailer is
-        # invisible.
+        # bound, so the fence stays open and the REAL trailer after the
+        # pseudo-closer is invisible; the genuine bare closer later ends
+        # the fence (r5 F1: a lenient closer that ignores indent would
+        # expose the trailer and flip this arm red).
         (
             "trailer_after_indent_4_closer_stays_fenced",
             (
-                "# P\n\n## Assumptions\n\nNone needed.\n\n```\n"
+                "# P\n\n## Assumptions\n\n```\nquoted template\n    ```\n"
                 f"{trailer}none remain.\n"
-                "    ```\n\nBody.\n"
+                "```\n"
             ),
             "2026-09-08",
             False,
             "missing decision-points trailer",
+        ),
+        # (r5 F7): a
+        # U+2028 embedded after a would-be closer run must not fabricate a
+        # parser-line closer (splitlines() used to split on it); the fence
+        # stays open and the trailer stays swallowed.
+        (
+            "trailer_after_unicode_separator_close_stays_fenced",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\nquoted template\n"
+                "``` \u2028\n"
+                f"{trailer}none remain.\n"
+                "```\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # (r5 F8): a backtick
+        # opener whose info string contains a backtick is CommonMark
+        # paragraph content, not an opener, so the trailer below stays
+        # visible.
+        (
+            "backtick_info_opener_is_paragraph_passes",
+            (
+                "# P\n\n## Assumptions\n\n```Decision points``` styled text.\n"
+                f"{trailer}none remain.\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # (r5 F8): a leading tab
+        # reads as indent >= 4, so the line can never open (or close) a
+        # fence and the trailer below stays visible.
+        (
+            "tab_indented_fence_line_is_content_passes",
+            (
+                "# P\n\n## Assumptions\n\n\t```\nquoted template\n"
+                f"{trailer}none remain.\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # (r5 F8): the same tab
+        # rule guards the CLOSER direction: the tab-indented line is fence
+        # content, the fence stays open, and the real trailer stays
+        # swallowed.
+        (
+            "tab_indented_closer_line_is_content_fails",
+            (
+                "# P\n\n## Assumptions\n\nNone needed.\n\n```\nquoted template\n"
+                "\t```\n"
+                f"{trailer}none remain.\n"
+                "```\n"
+            ),
+            "2026-09-08",
+            False,
+            "missing decision-points trailer",
+        ),
+        # (characterization, r5 F7): a CRLF plan
+        # keeps passing the gate after the split-on-newline line model.
+        (
+            "crlf_fenced_quote_passes",
+            (
+                "# P\r\n\r\n## Assumptions\r\n\r\n```\r\nquoted template\r\n"
+                "```\r\n\r\n"
+                f"{trailer}none remain.\r\n"
+            ),
+            "2026-09-08",
+            True,
+            None,
         ),
     ]
 
     for suffix, plan_text, date, expect_ok, needle in arms:
+        # r5 F4: the table validates its own needle/polarity pairing, and
+        # (r1 F2) a fail-arm needle must have only non-empty "|"-separated
+        # parts, else an empty part would satisfy the check vacuously.
+        # (r2 F1) both guards are explicit raises so they survive python -O,
+        # and needle parts must be non-whitespace, not merely non-empty.
+        if (needle is None) != expect_ok:
+            raise AssertionError(suffix)
+        if needle is not None and not all(p.strip() for p in needle.split("|")):
+            raise AssertionError(suffix)
         plan, _ = _write_clean_state(
             plans_dir, reviews_dir, plan_text=plan_text, date=date
         )
@@ -2251,7 +2389,9 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
         if expect_ok:
             passed = ok and reason is None
         else:
-            passed = not ok and needle in (reason or "")
+            # Multi-needle convention (r5 F3): a "|"-separated needle must
+            # have every part present in the reason.
+            passed = not ok and all(n in (reason or "") for n in needle.split("|"))
         check(
             f"selftest#decision_marker/{suffix}",
             passed,
@@ -2259,71 +2399,53 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
         )
         _clean_reviews_dir(reviews_dir)
 
-    # Sidecar-mutation arms (bespoke: they edit the sidecar after the
-    # fixture write).
-
-    # sidecar_date_missing_exempt (characterization, r2 F1): a
-    # current-shape sidecar without a date key is exempt from the trailer
-    # gate; the schema does not hard-require the field and failing it
-    # would retrofit legacy artifacts.
-    plan, review = _write_clean_state(
-        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
-    )
-    sidecar = json.loads(
-        review.with_suffix(".stats.json").read_text(encoding="utf-8")
-    )
-    del sidecar["date"]
-    review.with_suffix(".stats.json").write_text(
-        json.dumps(sidecar), encoding="utf-8"
-    )
-    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
-    check(
-        "selftest#decision_marker/sidecar_date_missing_exempt",
-        ok and reason is None,
-        f"ok={ok} reason={reason}",
-    )
-    _clean_reviews_dir(reviews_dir)
-
-    # sidecar_date_blank_exempt (r2 F4): a whitespace-only sidecar date is
-    # exempt exactly like a missing one.
-    plan, review = _write_clean_state(
-        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
-    )
-    sidecar = json.loads(
-        review.with_suffix(".stats.json").read_text(encoding="utf-8")
-    )
-    sidecar["date"] = " "
-    review.with_suffix(".stats.json").write_text(
-        json.dumps(sidecar), encoding="utf-8"
-    )
-    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
-    check(
-        "selftest#decision_marker/sidecar_date_blank_exempt",
-        ok and reason is None,
-        f"ok={ok} reason={reason}",
-    )
-    _clean_reviews_dir(reviews_dir)
-
-    # sidecar_date_malformed_exempt (r4 F4): a non-ISO date (09/10/2026)
-    # is exempt like a missing or blank one; a malformed value must not
-    # reach the lexicographic gate comparison.
-    plan, review = _write_clean_state(
-        plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
-    )
-    sidecar = json.loads(
-        review.with_suffix(".stats.json").read_text(encoding="utf-8")
-    )
-    sidecar["date"] = "09/10/2026"
-    review.with_suffix(".stats.json").write_text(
-        json.dumps(sidecar), encoding="utf-8"
-    )
-    ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
-    check(
-        "selftest#decision_marker/sidecar_date_malformed_exempt",
-        ok and reason is None,
-        f"ok={ok} reason={reason}",
-    )
-    _clean_reviews_dir(reviews_dir)
+    # Sidecar-mutation arms (r5 F10): one (name, mutate) table with
+    # a single fixture write and one mutate(sidecar) call per row; every row
+    # is an exempt pass-arm (expect_ok=True).
+    sidecar_arms: list[tuple[str, object]] = [
+        # (characterization, r2 F1): a current-shape sidecar without a
+        # date key is exempt from the trailer gate; the schema does not
+        # hard-require the field and failing it would retrofit legacy
+        # artifacts.
+        (
+            "sidecar_date_missing_exempt",
+            lambda sidecar: sidecar.pop("date"),
+        ),
+        # (r2 F4): a whitespace-only sidecar date is exempt exactly like
+        # a missing one.
+        (
+            "sidecar_date_blank_exempt",
+            lambda sidecar: sidecar.update(date=" "),
+        ),
+        # (r4 F4): a wrong-shape date (2026-09-08T12:00: valid ISO 8601
+        # datetime, not the YYYY-MM-DD shape the guard requires) is exempt
+        # like a missing or blank one; a malformed value must not reach the
+        # lexicographic gate comparison (r5 F2: the malformed value
+        # sorts at/above the 2026-09-08 minimum, so dropping the shape
+        # guard would gate the plan and flip this arm).
+        (
+            "sidecar_date_malformed_exempt",
+            lambda sidecar: sidecar.update(date="2026-09-08T12:00"),
+        ),
+    ]
+    for name, mutate in sidecar_arms:
+        plan, review = _write_clean_state(
+            plans_dir, reviews_dir, plan_text="# P\n\nBody.\n", date="2026-09-08"
+        )
+        sidecar = json.loads(
+            review.with_suffix(".stats.json").read_text(encoding="utf-8")
+        )
+        mutate(sidecar)
+        review.with_suffix(".stats.json").write_text(
+            json.dumps(sidecar), encoding="utf-8"
+        )
+        ok, reason = evaluate_readiness(plan, plans_dir, reviews_dir)
+        check(
+            f"selftest#decision_marker/{name}",
+            ok and reason is None,
+            f"ok={ok} reason={reason}",
+        )
+        _clean_reviews_dir(reviews_dir)
 
 def _selftest_review_scope(plans_dir: Path, reviews_dir: Path, check) -> None:
     """Review Scope category family: path-kind vs declared category,

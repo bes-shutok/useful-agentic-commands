@@ -47,3 +47,15 @@ _Avoid_: independent contract bug, per-surface docs drift
 **Duplicate unit witness**:
 A test finding that demands an assertion for a production-path invariant another test demonstrably pins (the pinning test is named and fails when the invariant is violated; for example call order asserted on one unit, now demanded of a sibling unit). During execute-plan Phase 3 addressing, it is deferred to backlog as one family-completeness item instead of being fixed round after round. A pin that cannot be reproduced as a failure under a violated-invariant mutation disqualifies the class and reverts the finding to the fix-everything default (see `receiving-review`).
 _Avoid_: per-test always-passes fix
+
+**Ownership registry**:
+One central Layer 2 file (path resolved via facts keys, e.g. `docs/maintenance/document-registry.md`) mapping stable document identity to the current living SOT, archived history artifacts, and aliases. Updated only within lifecycle transitions (plan completion, backlog archival, RFC closure); never edited in place via stub files. Decided 2026-09-08 (ADR trail for backlog `2026-09-08-document-ownership-and-archive-lifecycle`).
+_Avoid_: per-doc frontmatter as the registry, "# Moved to" stub redirect
+
+**Document identity**:
+A stable capability or concept identifier naming what a document owns, independent of any ticket, branch, or implementation task. Tickets and session ids may appear as provenance, never as the durable key.
+_Avoid_: ticket-id-keyed doc name, branch-scoped identity
+
+**Living SOT**:
+The one document or wire/schema source that owns the current normative rule for an idea. May change freely while its owning work is active; on completion or supersession the rule's home becomes a completed history artifact plus a successor entry in the ownership registry.
+_Avoid_: historical artifact (for a living doc), frozen context (a completed history artifact under `docs/history/context/`, not a separate state)

@@ -1,6 +1,6 @@
 # Backlog: plan_readiness trailer gate r5 review deferrals (12 findings)
 
-Status: open
+Status: done
 Workflow: backlog
 Source: docs/reviews/2026-09-07-plans-facts-do-not-resolve-design-ambiguity-code-review-r5.md (all staged findings + both overflow entries, round 5 fresh full panel, zero blocking)
 Severity: 3 Medium, 9 Low (all non-blocking)

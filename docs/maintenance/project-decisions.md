@@ -17,3 +17,11 @@ Decided 2026-09-01 by the user after an execute-plan run kept reviewing past the
 **Considered options:** total cap of 7 or no total cap (relying on qualitative reflection triggers); the five-review-cap backlog item's full exit-policy table (also auto-deferring YAGNI/rename Lows and ticket-tag drift); cap checkpoint only (no class-based default).
 
 **Consequences:** `receiving-review`'s "address every finding by default" gains a scoped Phase 3 exception whose two classes are defined in the glossary (sibling-doc restatement, duplicate unit witness), not a general weakening. Once the cap fires, each further round needs user direction unless the user gives a standing "continue until clean" instruction for that loop. Harness rules stay tool-agnostic and enforceable on hosts that cannot launch sub-agents. The harness-side rules of the single-SOT and false-green backlog items are implemented in this change; the doc-hierarchy and plans-authoring rows remain with their owning skills.
+
+## ADR-0003: Document lifecycle binds service repos by schema and this repo by convention
+
+Decided 2026-09-08 during the grill of backlog item `2026-09-08-document-ownership-and-archive-lifecycle`. The document ownership/immutability lifecycle (living SOT vs completed history artifact, registry, freeze transition) is part of the doc-hierarchy schema, so company service repos bind automatically once migration-complete. The ai-playbook instruction repo itself is outside the migration-complete signal (the verify script fatals on it), but adopts the same lifecycle by convention for its own `docs/` tree without requiring the signal, extending ADR-0001 rather than defining a third scope class.
+
+**Considered options:** service-repos-only (leaves the churn that motivated the backlog legal in this repo); require a new "adopted" signal for non-service repos (third scope class, more machinery).
+
+**Consequences:** doc-hierarchy-family wording must distinguish schema binding (service repos, signal-gated) from convention adoption (this repo). Validators and registry tooling must work on any repo with resolved facts paths, not depend on the migration-complete signal.

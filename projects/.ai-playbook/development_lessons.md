@@ -5723,3 +5723,17 @@ When the identical command behaves differently in the agent shell versus the use
 **Example:** Given trailer `rollout: phased (confirmed); open: is migration coupled`, a start-only `^(pending|tbd|todo|open)` stem passes (value starts with `rollout`); splitting on `;` and matching each stripped segment's start rejects the second segment. The rejected comma-tolerant split would false-split receipts carrying commas inside parentheses, so pin semicolon-only.
 
 **See also:** #253 (generate expected post-state by running today's rule, never hand-editing), the plans skill Validation Commands authoring rules (probe pattern rules).
+
+## 307. A Sub-Agent Killed By A Usage Limit May Have Flushed Complete Artifacts; Audit Disk Before Relaunching
+
+**Principle:** Family H (verify the real thing, not the abstraction)
+
+**Trigger:** A sub-agent aborts with a 429/usage-limit/quota error and the orchestrator's next move is to relaunch the same unit from scratch. The agent's dying act may have been writing its mandated output artifacts; process death is not evidence about artifact completeness.
+
+**Rule:** Before relaunching a killed sub-agent, check its mandated artifact paths on disk and validate them with the same mechanical gate a live run would face (digest binding, schema validator, required sections). If a complete valid record exists, keep it canonical: a relaunched panel that re-derives the same verdict amends the existing record (sidecar usage field) instead of writing a parallel duplicate. If the record is partial, apply the partial-predecessor audit rules (#173, #185) rather than assuming either way.
+
+**Why:** A certification-round sub-agent died on a usage-limit error; the relaunch found a complete, hard-validator-passing review artifact and stats sidecar already at the mandated paths. Both panels converged on the same verdict, so the relaunch burned a full panel budget to confirm work that was already done; the staging skill's canonical-record rule had to absorb the duplicate.
+
+**Example:** Replace "agent died -> rerun the round" with: `test -f <mandated-artifact> && <validator> --hard <artifact>` first; relaunch only on missing or invalid output, and on convergence treat the earlier record as the single canonical one.
+
+**See also:** #134 (probe quota resets before treating a limit as a hard block), #173 (multi-pass resume diff-shape), #185 (kill-mid-refactor parse verification).
