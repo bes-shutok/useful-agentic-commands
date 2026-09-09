@@ -192,18 +192,25 @@ def summary_section(content: str) -> str:
     return md_section(content, "Summary")
 
 
-# Placeholder vocabulary for trailer values: a value is unresolved when its
-# start is pending, tbd, or todo (case-insensitive) followed by end of
-# value, whitespace, or more word characters. The boundary is a negative
-# lookahead for the HYPHEN character only — not ``\b`` and not word
-# characters: a stem followed immediately by a hyphen is treated as a
-# resolved receipt, so ``todo-list ownership: ...`` and ``tbd-for-now``
-# pass, while ``todos``, ``pending2``, and ``TBD for now`` fail. The
-# hyphen carve-out is load-bearing for the pinned ``todo-list`` receipt
-# (r2 F2); ``\b`` would also match at the hyphen boundary and wrongly
-# reject it. Lookalikes with trailing word characters fail (r3 F3).
-# The ``<`` template-token check is separate (r2 F2).
-_PLACEHOLDER_RE = re.compile(r"^(pending|tbd|todo)(?!-)", re.IGNORECASE)
+# Placeholder vocabulary for trailer values: a receipt segment is
+# unresolved when its start is pending, tbd, todo, or open
+# (case-insensitive) followed by end of value, whitespace, or more word
+# characters. The boundary is a negative lookahead for the HYPHEN
+# character only — not ``\b`` and not word characters: a stem followed
+# immediately by a hyphen is treated as a resolved receipt, so
+# ``todo-list ownership: ...``, ``tbd-for-now``, and ``open-question
+# policy: ...`` pass, while ``todos``, ``pending2``, and ``TBD for now``
+# fail. The hyphen carve-out is load-bearing for the pinned ``todo-list``
+# receipt (r2 F2) and the ``open-question`` receipt; ``\b`` would also
+# match at the hyphen boundary and wrongly reject them. Lookalikes with
+# trailing word characters fail (r3 F3). Receipt-wording constraints
+# shared by every stem: a receipt segment must not BEGIN with a bare
+# stem word (reword it or hyphenate, e.g. "open-question"; only the
+# hyphen arm escapes the stem), and a receipt must not contain a
+# semicolon, because any ``;`` starts a new segment under the
+# per-segment split (use commas inside a receipt instead). The ``<``
+# template-token check is separate (r2 F2).
+_PLACEHOLDER_RE = re.compile(r"^(pending|tbd|todo|open)(?!-)", re.IGNORECASE)
 
 
 # Fence opener: 3+ backticks or 3+ tildes, optionally followed by an info
@@ -270,15 +277,20 @@ def decision_marker_problem(plan_text: str) -> str | None:
     ``None`` when the single trailer line inside the ``## Assumptions``
     section reads ``none remain.`` (case-insensitive, trailing period
     optional) or carries a non-placeholder receipt; a named reason
-    otherwise. Placeholder-prefixed values (starting with the words
-    ``pending``, ``tbd``, or ``todo``, or a ``<`` template token) are
-    unresolved. Fenced code blocks are stripped from the WHOLE document
-    FIRST, then the ``## Assumptions`` section is extracted from the
-    stripped text (so a fenced heading cannot truncate the section); an
-    unterminated fence fails closed by dropping everything it swallowed.
-    More than one trailer line is ambiguous and is rejected on its own
-    reason (r4 F1: last-wins would let an unresolved line hide under a
-    terminal none-remain line).
+    otherwise. Placeholder-prefixed segments (starting with the words
+    ``pending``, ``tbd``, ``todo``, or ``open``, or a ``<`` template
+    token) are unresolved. The stem and template-token checks apply PER
+    RECEIPT SEGMENT: the trailer value is split on ``;`` and each
+    stripped segment's start is tested (segment start = value start or
+    the start after any ``;``), so a mixed mid-interview trailer — closed
+    receipts plus one newly ``open:`` question — fails even though its
+    value start is a resolved receipt. Fenced code blocks are stripped
+    from the WHOLE document FIRST, then the ``## Assumptions`` section is
+    extracted from the stripped text (so a fenced heading cannot truncate
+    the section); an unterminated fence fails closed by dropping
+    everything it swallowed. More than one trailer line is ambiguous and
+    is rejected on its own reason (r4 F1: last-wins would let an
+    unresolved line hide under a terminal none-remain line).
     """
     values = DECISION_MARKER_RE.findall(
         md_section(_strip_fences(plan_text), "Assumptions")
@@ -290,8 +302,10 @@ def decision_marker_problem(plan_text: str) -> str | None:
     value = values[0]
     if value.strip().lower() in {"none remain.", "none remain"}:
         return None
-    if value.lstrip().startswith("<") or _PLACEHOLDER_RE.match(value.lstrip()):
-        return f"unresolved decision-points trailer: {value!r}"
+    for segment in value.split(";"):
+        start = segment.lstrip()
+        if start.startswith("<") or _PLACEHOLDER_RE.match(start):
+            return f"unresolved decision-points trailer: {value!r}"
     return None
 
 
@@ -2031,6 +2045,58 @@ def _selftest_decision_marker(plans_dir: Path, reviews_dir: Path, check) -> None
         (
             "gated_hyphenated_placeholder_passes",
             f"# P\n\n## Assumptions\n\n{trailer}tbd-for-now\n",
+            "2026-09-08",
+            True,
+            None,
+        ),
+        # gated_open_trailer_fails: a trailer value STARTING with the
+        # bare stem ``open:`` is an unresolved open question.
+        (
+            "gated_open_trailer_fails",
+            f"# P\n\n## Assumptions\n\n{trailer}open: phased-rollout decision\n",
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # gated_mixed_open_segment_fails: a mixed mid-interview trailer
+        # (a CLOSED receipt plus a semicolon-separated ``open:`` segment)
+        # is unresolved; a start-only stem check would miss it.
+        (
+            "gated_mixed_open_segment_fails",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}rollout: phased (user confirmed 2026-09-08); "
+                "open: is the migration coupled\n"
+            ),
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # gated_mixed_template_segment_fails: a ``<`` template token is
+        # unresolved wherever it sits, including as a later
+        # semicolon-separated segment.
+        (
+            "gated_mixed_template_segment_fails",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}rollout: phased (user confirmed 2026-09-08); "
+                "<point>: <receipt>\n"
+            ),
+            "2026-09-08",
+            False,
+            "unresolved decision-points trailer",
+        ),
+        # open_question_hyphen_receipt_passes (characterization): the
+        # hyphen carve-out keeps a receipt whose first word is the
+        # hyphenated ``open-question`` passing, mirroring the pinned
+        # ``todo-list`` receipt.
+        (
+            "open_question_hyphen_receipt_passes",
+            (
+                "# P\n\n## Assumptions\n\n"
+                f"{trailer}open-question policy: receipts in trailer "
+                "(user confirmed 2026-09-08)\n"
+            ),
             "2026-09-08",
             True,
             None,

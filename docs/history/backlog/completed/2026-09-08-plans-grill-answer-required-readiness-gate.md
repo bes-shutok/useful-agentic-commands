@@ -1,7 +1,8 @@
 # Backlog: block plan readiness until grill questions are answered
 
-Status: open
+Status: done
 Workflow: backlog
+Completed: 2026-09-09 via docs/plans/2026-09-08-plans-grill-answer-state-machine.md (executed, archived to docs/plans/completed/)
 Origin: User feedback during CRM-691 plan authoring on 2026-09-08
 Severity: Medium
 Scope: `agents/skills/plans/SKILL.md`, `agents/skills/grilling/SKILL.md`, `agents/skills/grill-with-docs/SKILL.md`, and plan-review readiness checks

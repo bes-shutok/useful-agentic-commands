@@ -1,7 +1,8 @@
 # Backlog: plans Step 1.4 meta-rule restates grilling triggers
 
-Status: open
+Status: done
 Workflow: backlog
+Completed: 2026-09-09 via docs/plans/2026-09-08-plans-grill-answer-state-machine.md (executed, archived to docs/plans/completed/)
 Grouping: to be joined with docs/history/backlog/2026-09-08-plans-grill-answer-required-readiness-gate.md into ONE authoring plan (same plans+grilling surface, 2026-09-08 user direction)
 Source: docs/reviews/2026-09-07-plans-facts-do-not-resolve-design-ambiguity-code-review-r1.md (overflow entry, design-simplicity, Low, architecture#duplicated-concept)
 Severity: Low

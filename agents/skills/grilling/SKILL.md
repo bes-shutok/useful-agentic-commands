@@ -33,6 +33,16 @@ Do not act on it until I confirm we have reached a shared understanding.
 
 **No generic acknowledgement confirms a material choice:** a reply such as sure, ok, or confirmed confirms only the material decisions explicitly named in the question or confirmation block; a decision about one adjacent concern is never generalized to another unlisted concern.
 
+**Answer state:** every material question has a per-question answer state, `open` or `closed`. A question is `open` from the moment it is asked until the user gives an answer that addresses THAT question or explicitly rejects the recommended option. While any material question is open, the plan or design may be edited only for non-decision facts or question framing.
+
+**Generic acknowledgements resume, never accept:** a generic acknowledgement or continue request such as "go on", "sure", or "okay" RESUMES the interview (restate the same question or ask the next one); it never accepts the pending recommendation; an answer to a different question does not close the unanswered one, and both states are tracked per question.
+
+**Opt-in phrase:** the only way to accept a pending recommendation without answering is the user's exact sentence "accept the recommendation for this question"; it is never inferred from "sure", "okay", "go on", or an adjacent answer.
+
+**Receipts:** when a question closes, record a one-line decision receipt (decision, source, date, affected plan section) before asking the next question.
+
+**Question economy and the consolidated assumptions list:** only genuinely unclear decisions are asked; anything safely inferable or already decided is never asked. Collect every clear or safely inferable assumption during the interview; they are presented as one consolidated list at the end of the interview, before the shared-understanding or readiness confirmation, so wrong assumptions can be vetoed in a single pass.
+
 ## Integration Points
 
 ### With `premortem` skill
@@ -40,6 +50,8 @@ After shared understanding is confirmed, offer `premortem` to stress-test the de
 
 ### With `plans` skill
 During plan creation, grilling can deepen Phase 1 requirements discovery when scope or trade-offs are ambiguous. Do not replace the plans skill interview structure; use grilling when the user explicitly asks to grill a decision or design.
+
+Sync note: the plans Step 1.4 confirmation meta-rule mirrors this skill's generic-acknowledgement, lifecycle-verb, answer-state, and opt-in-phrase clauses for confirmation-time self-containment, so an edit to either set of clauses must update the peer in the same change.
 
 ### With `rfc-design` skill
 Use before drafting or after a first RFC draft when design choices need explicit user sign-off. Reference the saved RFC path once it exists; do not duplicate RFC content in chat.
